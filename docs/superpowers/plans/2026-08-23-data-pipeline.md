@@ -383,12 +383,21 @@ def test_ema_raises_when_not_enough_bars():
         indicators.ema(rows(make_bars(n=3)), period=10)
 
 
-def test_atr_of_constant_range_series():
-    # make_bars gives every bar a high/low spread of exactly 1.0 and a
-    # close-to-close step of 1.0, so true range is 1.0 for the first bar
-    # and 1.5 thereafter (high - previous close).
+def test_atr_converges_to_the_constant_true_range():
+    # make_bars gives every bar a high/low spread of 1.0 and a close-to-close
+    # step of 1.0, so true range is 1.0 on the first bar and 1.5 thereafter
+    # (high - previous close). Wilder smoothing converges toward 1.5; with 200
+    # bars the residual from the initial 1.0 is far below the tolerance.
+    bars = rows(make_bars(n=200, start_price=100.0, step=1.0))
+    assert indicators.atr(bars, period=14) == pytest.approx(1.5, abs=0.01)
+
+
+def test_atr_has_not_converged_after_few_bars():
+    # Guards the smoothing direction: a young ATR must sit below the limit,
+    # not above it or already equal to it.
     bars = rows(make_bars(n=30, start_price=100.0, step=1.0))
-    assert indicators.atr(bars, period=14) == pytest.approx(1.5, abs=0.05)
+    value = indicators.atr(bars, period=14)
+    assert 1.4 < value < 1.5
 
 
 def test_atr_is_zero_for_a_frozen_market():
@@ -502,12 +511,12 @@ def rvol(bars: Sequence[dict], session_date: str, lookback_days: int = 5) -> flo
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_indicators.py -v`
-Expected: 7 passed
+Expected: 9 passed
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `python -m pytest -v`
-Expected: 13 passed
+Expected: 15 passed
 
 - [ ] **Step 6: Commit**
 
@@ -673,7 +682,7 @@ git commit -m "feat: live IEX websocket bar stream"
 
 ## Phase 1 done when
 
-- `python -m pytest` passes with 13 tests
+- `python -m pytest` passes with 15 tests
 - `python -m agent.ingest` backfills, then advances `last_bar_ts` during market hours
 - `data/market.db` is gitignored and contains bars for all 20 symbols
 
