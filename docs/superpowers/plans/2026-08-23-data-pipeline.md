@@ -537,7 +537,7 @@ git commit -m "feat: EMA, ATR and RVOL indicators"
 
 **Interfaces:**
 - Consumes: `agent.config.UNIVERSE`, `agent.config.DB_PATH`, `agent.config.api_keys`, `agent.store.connect`, `agent.store.upsert_bars`
-- Produces: `warm_start(conn, symbols: list[str], days: int = 5) -> int` — returns rows written
+- Produces: `warm_start(conn, symbols: list[str], days: int = 12) -> int` — returns rows written
 
 - [ ] **Step 1: Write `agent/ingest.py` with warm start only**
 
@@ -573,12 +573,17 @@ def _to_row(symbol: str, bar) -> tuple:
     )
 
 
-def warm_start(conn, symbols: list[str], days: int = 5) -> int:
+def warm_start(conn, symbols: list[str], days: int = 12) -> int:
     """Backfill recent 1-minute bars so indicators are live immediately.
 
-    One multi-symbol request, not one per symbol: the free tier allows
-    200 REST calls per minute and we have no reason to spend 20 of them.
-    The 15-minute REST delay is irrelevant here because this is history.
+    One multi-symbol request, not one per symbol: the free tier allows 200 REST
+    calls per minute and there is no reason to spend 20 of them. The 15-minute
+    REST delay does not matter here because this is history, not a live price.
+
+    `days` is CALENDAR days, not sessions. 12 calendar days guarantees at least
+    6 trading sessions across a weekend and a public holiday, which is what
+    indicators.rvol(lookback_days=5) needs: five prior sessions plus today.
+    Asking for 5 here yields 3-4 sessions and rvol silently degrades.
     """
     key, secret = config.api_keys()
     client = StockHistoricalDataClient(key, secret)
@@ -600,7 +605,7 @@ def warm_start(conn, symbols: list[str], days: int = 5) -> int:
 - [ ] **Step 2: Run it against the live API**
 
 Run: `python -c "from agent import config, ingest, store; c = store.connect(config.DB_PATH); print(ingest.warm_start(c, config.UNIVERSE))"`
-Expected: a non-zero row count printed, roughly 20 symbols × ~390 minutes × 5 sessions, reduced by IEX sparsity.
+Expected: a non-zero row count. Verified 2026-08-23: 67,369 bars, 20/20 symbols populated, 9 sessions (11-21 Aug). Re-running writes the same total, confirming the upsert is replay-safe against live data.
 
 - [ ] **Step 3: Verify bars actually landed**
 

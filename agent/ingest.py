@@ -31,12 +31,17 @@ def _to_row(symbol: str, bar) -> tuple:
     )
 
 
-def warm_start(conn, symbols: list[str], days: int = 5) -> int:
+def warm_start(conn, symbols: list[str], days: int = 12) -> int:
     """Backfill recent 1-minute bars so indicators are live immediately.
 
     One multi-symbol request, not one per symbol: the free tier allows 200 REST
     calls per minute and there is no reason to spend 20 of them. The 15-minute
     REST delay does not matter here because this is history, not a live price.
+
+    `days` is CALENDAR days, not sessions. 12 calendar days guarantees at least
+    6 trading sessions across a weekend and a public holiday, which is what
+    indicators.rvol(lookback_days=5) needs: five prior sessions plus today.
+    Asking for 5 here yields 3-4 sessions and rvol silently degrades.
     """
     key, secret = config.api_keys()
     client = StockHistoricalDataClient(key, secret)
