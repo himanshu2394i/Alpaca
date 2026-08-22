@@ -1,0 +1,6 @@
+.env
+*.db
+*.db-journal
+__pycache__/
+.venv/
+HALT
