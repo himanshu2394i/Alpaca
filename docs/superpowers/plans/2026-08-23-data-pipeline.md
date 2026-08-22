@@ -35,6 +35,7 @@
 | `agent/ingest.py` | Warm start + websocket subscription. Writes via `store`. No logic. |
 | `tests/test_store.py` | Schema, upsert idempotency, reads |
 | `tests/test_indicators.py` | Known bars in, known values out |
+| `tests/test_ingest.py` | Row mapper: tuple order, UTC conversion, type coercion |
 | `tests/conftest.py` | `conn` fixture over a temporary database |
 | `tests/helpers.py` | Deterministic bar generator shared by tests |
 
@@ -545,7 +546,6 @@ git commit -m "feat: EMA, ATR and RVOL indicators"
 
 This module deliberately contains no trading logic. It writes rows.
 """
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -629,14 +629,23 @@ git commit -m "feat: REST warm start backfill for the universe"
 
 - [ ] **Step 1: Append the stream to `agent/ingest.py`**
 
+`StockDataStream.run()` is synchronous, owns its own event loop, and already
+reconnects with exponential backoff (`_reconnect_delay`). Do not write a retry
+loop — the library has one.
+
 ```python
-from alpaca.data.live import StockDataStream
+from alpaca.data.live.stock import StockDataStream
 
 
-async def run(conn) -> None:
+def run(conn) -> None:
     """Subscribe to 1-minute bars for the universe and write each to SQLite.
 
-    Free tier caps subscriptions at 30 symbols; config.UNIVERSE is 20.
+    Blocks until interrupted. alpaca-py's own run() owns the event loop and
+    already reconnects with backoff, so we do not write a retry loop here.
+
+    # ponytail: an in-process reconnect leaves a gap in `bars`; only a process
+    # restart backfills it via warm_start. Add a periodic gap-filler if the
+    # screener starts tripping over holes.
     """
     key, secret = config.api_keys()
     stream = StockDataStream(key, secret, feed=DataFeed.IEX)
@@ -646,14 +655,18 @@ async def run(conn) -> None:
         log.debug("bar %s %s c=%s", bar.symbol, bar.timestamp, bar.close)
 
     stream.subscribe_bars(on_bar, *config.UNIVERSE)
-    await stream._run_forever()
+    log.info("streaming %d symbols from IEX", len(config.UNIVERSE))
+    stream.run()
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     conn = store.connect(config.DB_PATH)
     warm_start(conn, config.UNIVERSE)
-    asyncio.run(run(conn))
+    run(conn)
 
 
 if __name__ == "__main__":
@@ -682,7 +695,7 @@ git commit -m "feat: live IEX websocket bar stream"
 
 ## Phase 1 done when
 
-- `python -m pytest` passes with 15 tests
+- `python -m pytest` passes with 19 tests
 - `python -m agent.ingest` backfills, then advances `last_bar_ts` during market hours
 - `data/market.db` is gitignored and contains bars for all 20 symbols
 
