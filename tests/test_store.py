@@ -1,3 +1,5 @@
+import pytest
+
 from agent import store
 from tests.helpers import make_bars
 
@@ -52,3 +54,58 @@ def test_last_bar_ts(conn):
 
     store.upsert_bars(conn, make_bars(n=3))
     assert store.last_bar_ts(conn, "SPY") == "2026-08-24T13:32:00Z"
+
+
+# --- positions --------------------------------------------------------------
+
+POS = dict(
+    symbol="SPY260904C00765000", underlying="SPY", right="call", qty=7,
+    entry_price=1.62, entry_ts="2026-08-24T14:05:00Z", entry_underlying=765.55,
+    stop_underlying=761.28, target_underlying=774.10, expiry="2026-09-04",
+    thesis="momentum break with 2.2x volume",
+)
+
+
+def test_open_position_round_trips(conn):
+    store.open_position(conn, **POS)
+    got = store.open_positions(conn)
+    assert len(got) == 1
+    assert got[0]["symbol"] == "SPY260904C00765000"
+    assert got[0]["qty"] == 7
+    assert got[0]["entry_price"] == 1.62
+    assert got[0]["thesis"] == "momentum break with 2.2x volume"
+
+
+def test_open_positions_excludes_closed_ones(conn):
+    store.open_position(conn, **POS)
+    store.close_position(conn, POS["symbol"], exit_price=2.10,
+                         exit_ts="2026-08-25T15:00:00Z", exit_reason="target hit")
+    assert store.open_positions(conn) == []
+
+
+def test_close_position_records_the_exit(conn):
+    store.open_position(conn, **POS)
+    store.close_position(conn, POS["symbol"], exit_price=2.10,
+                         exit_ts="2026-08-25T15:00:00Z", exit_reason="target hit")
+    row = conn.execute("SELECT * FROM positions WHERE symbol = ?",
+                       (POS["symbol"],)).fetchone()
+    assert row["status"] == "closed"
+    assert row["exit_price"] == 2.10
+    assert row["exit_reason"] == "target hit"
+
+
+def test_reopening_the_same_contract_after_closing_is_allowed(conn):
+    store.open_position(conn, **POS)
+    store.close_position(conn, POS["symbol"], 2.10, "2026-08-25T15:00:00Z", "target")
+    store.open_position(conn, **{**POS, "entry_ts": "2026-08-26T14:00:00Z"})
+    assert len(store.open_positions(conn)) == 1
+
+
+def test_cannot_open_the_same_contract_twice_while_it_is_open(conn):
+    store.open_position(conn, **POS)
+    with pytest.raises(ValueError):
+        store.open_position(conn, **POS)
+
+
+def test_open_positions_is_empty_on_a_fresh_database(conn):
+    assert store.open_positions(conn) == []
