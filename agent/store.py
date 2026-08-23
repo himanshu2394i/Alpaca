@@ -130,3 +130,9 @@ def close_position(
         "exit_reason = ? WHERE symbol = ? AND status = 'open'",
         (exit_price, exit_ts, exit_reason, symbol),
     )
+
+
+def record_equity(conn: sqlite3.Connection, ts_utc: str, value: float) -> None:
+    """Snapshot account equity. This is the P&L curve the demo shows."""
+    conn.execute("INSERT OR REPLACE INTO equity (ts_utc, value) VALUES (?, ?)",
+                 (ts_utc, value))
