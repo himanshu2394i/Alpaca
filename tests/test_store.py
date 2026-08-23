@@ -109,3 +109,22 @@ def test_cannot_open_the_same_contract_twice_while_it_is_open(conn):
 
 def test_open_positions_is_empty_on_a_fresh_database(conn):
     assert store.open_positions(conn) == []
+
+
+def test_open_position_rejects_a_right_that_contradicts_the_symbol(conn):
+    # A call stored as a put gets put-style inverted stop/target levels, so
+    # every exit then fires on exactly the wrong move.
+    with pytest.raises(ValueError, match="right"):
+        store.open_position(conn, **{**POS, "symbol": "SPY260904C00765000",
+                                     "right": "put"})
+
+
+def test_open_position_rejects_a_symbol_it_cannot_parse(conn):
+    with pytest.raises(ValueError):
+        store.open_position(conn, **{**POS, "symbol": "NOTACONTRACT"})
+
+
+def test_open_position_accepts_a_matching_put(conn):
+    store.open_position(conn, **{**POS, "symbol": "SPY260904P00765000",
+                                 "right": "put"})
+    assert store.open_positions(conn)[0]["right"] == "put"

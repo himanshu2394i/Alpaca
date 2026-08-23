@@ -69,6 +69,7 @@ async def tick(
         contract = _contract_for_exit(position, premiums.get(signal.symbol))
         order = execute.build_order(contract, signal.qty, "sell", now_utc)
         log.info("EXIT %s: %s", signal.symbol, signal.reason)
+        store.record_decision(conn, now_utc, signal.symbol, "exit", signal.reason)
         await broker.place(order, dry_run=dry_run)
         if not dry_run:
             store.close_position(conn, signal.symbol,
@@ -98,6 +99,8 @@ async def tick(
         contract = pick_contract(gates.parse_chain(chain), today)
         if contract is None:
             log.info("no viable contract for %s", candidate.symbol)
+            store.record_decision(conn, now_utc, candidate.symbol, "no_contract",
+                                  "no contract passed the gates")
             continue
 
         qty = gates.size_contracts(equity, contract.ask)
@@ -108,9 +111,14 @@ async def tick(
                                 now_et=_et_hhmm(now_utc), today=today)
         if blocked:
             log.info("gate rejected %s: %s", contract.symbol, blocked)
+            store.record_decision(conn, now_utc, contract.symbol, "rejected", blocked)
             continue
 
+        thesis = f"move {candidate.move_adr:+.2f} ADR, rvol {candidate.rvol:.2f}"
         order = execute.build_order(contract, qty, "buy", now_utc)
+        store.record_decision(conn, now_utc, contract.symbol, "entry",
+                              f"{qty}x @ {contract.ask:.2f}, delta {contract.delta:.2f}",
+                              thesis)
         await broker.place(order, dry_run=dry_run)
         entries.append((candidate, contract, qty))
 
@@ -123,7 +131,7 @@ async def tick(
                 entry_ts=now_utc, entry_underlying=candidate.price,
                 stop_underlying=stop, target_underlying=target,
                 expiry=contract.expiry,
-                thesis=f"move {candidate.move_adr:+.2f} ADR, rvol {candidate.rvol:.2f}",
+                thesis=thesis,
             )
 
     return {"halted": False, "halt_reason": None,

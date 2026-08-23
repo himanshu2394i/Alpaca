@@ -43,6 +43,18 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 
 CREATE INDEX IF NOT EXISTS positions_open ON positions(status);
+
+-- Every decision the agent reached, including the ones to do nothing. This is
+-- the audit trail and the demo artifact: a rejection with its reason is more
+-- informative than a trade without one.
+CREATE TABLE IF NOT EXISTS decisions (
+    ts_utc  TEXT NOT NULL,
+    symbol  TEXT NOT NULL,
+    action  TEXT NOT NULL,   -- entry | exit | rejected | no_contract
+    detail  TEXT NOT NULL DEFAULT '',
+    thesis  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (ts_utc, symbol, action)
+);
 """
 
 
@@ -98,6 +110,17 @@ def open_position(
     same contract would double the intended risk and make exit accounting
     ambiguous - far better to fail loudly here than to discover it at exit.
     """
+    # The OCC symbol already encodes call/put. If the stored `right` disagrees,
+    # exits.levels() has assigned inverted stop and target prices and every exit
+    # check will fire on the wrong direction. Fail here, loudly.
+    from agent.gates import parse_occ
+
+    _, _, symbol_right, _ = parse_occ(symbol)
+    if symbol_right != right:
+        raise ValueError(
+            f"right {right!r} contradicts symbol {symbol} (which is a {symbol_right})"
+        )
+
     already = conn.execute(
         "SELECT 1 FROM positions WHERE symbol = ? AND status = 'open'", (symbol,)
     ).fetchone()
@@ -136,3 +159,32 @@ def record_equity(conn: sqlite3.Connection, ts_utc: str, value: float) -> None:
     """Snapshot account equity. This is the P&L curve the demo shows."""
     conn.execute("INSERT OR REPLACE INTO equity (ts_utc, value) VALUES (?, ?)",
                  (ts_utc, value))
+
+
+def record_decision(conn: sqlite3.Connection, ts_utc: str, symbol: str,
+                    action: str, detail: str = "", thesis: str = "") -> None:
+    """Log one decision, including decisions not to trade."""
+    conn.execute(
+        "INSERT OR REPLACE INTO decisions (ts_utc, symbol, action, detail, thesis) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (ts_utc, symbol, action, detail, thesis),
+    )
+
+
+def recent_decisions(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM decisions ORDER BY ts_utc DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
+def closed_positions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM positions WHERE status = 'closed' ORDER BY exit_ts DESC"
+    ).fetchall()
+
+
+def equity_series(conn: sqlite3.Connection, limit: int = 2000) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM (SELECT * FROM equity ORDER BY ts_utc DESC LIMIT ?) "
+        "ORDER BY ts_utc ASC", (limit,)
+    ).fetchall()
