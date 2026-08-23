@@ -99,3 +99,40 @@ async def call(sess, name: str, args: dict) -> dict:
     if not result.content:
         return {}
     return unwrap(result.content[0].text)
+
+
+async def fetch_chain(sess, underlying: str, right: str, dte_lo: int, dte_hi: int,
+                      strike_lo: float, strike_hi: float, max_pages: int = 12) -> dict:
+    """Fetch a full option chain, following pagination.
+
+    get_option_chain returns one page and a `next_page_token`. A single page is
+    all one expiry, so a caller that ignores the token sees only the nearest
+    weekly and can never buy anything but a 3-DTE contract. Merges pages into
+    one snapshots dict.
+    """
+    from datetime import date, timedelta
+
+    today = date.today()
+    args = {
+        "underlying_symbol": underlying,
+        "type": right,
+        "expiration_date_gte": (today + timedelta(days=dte_lo)).isoformat(),
+        "expiration_date_lte": (today + timedelta(days=dte_hi)).isoformat(),
+        "strike_price_gte": strike_lo,
+        "strike_price_lte": strike_hi,
+        "limit": 200,
+    }
+
+    snapshots: dict = {}
+    token = None
+    for _ in range(max_pages):
+        page_args = dict(args)
+        if token:
+            page_args["page_token"] = token
+        page = await call(sess, "get_option_chain", page_args)
+        snapshots.update(page.get("snapshots") or {})
+        token = page.get("next_page_token")
+        if not token:
+            break
+
+    return {"snapshots": snapshots}
