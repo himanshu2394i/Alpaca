@@ -12,7 +12,7 @@ processed before entries, and they run even when every entry path is halted.
 import logging
 from pathlib import Path
 
-from agent import config, exits, execute, gates, screener, store
+from agent import config, decide, exits, execute, gates, screener, store
 
 log = logging.getLogger(__name__)
 
@@ -46,11 +46,17 @@ async def tick(
     premiums: dict[str, float] | None = None,
     symbols=None,
     dry_run: bool = True,
+    decide_client=None,
 ) -> dict:
     """One decision cycle. Returns what it did, for the decision log.
 
     `broker` needs `fetch_chain(...)` and `place(order, dry_run=...)`, which
     keeps this function testable without a live MCP session.
+
+    `decide_client` is an anthropic client, or None. None means the LLM is out
+    of the loop entirely and pick_contract() chooses deterministically - the
+    agent stays fully functional, and every other component stays testable,
+    with no model in the picture at all.
     """
     premiums = premiums or {}
     symbols = symbols or config.UNIVERSE
@@ -96,25 +102,41 @@ async def tick(
             candidate.price * (1 - CHAIN_STRIKE_WINDOW),
             candidate.price * (1 + CHAIN_STRIKE_WINDOW),
         )
-        contract = pick_contract(gates.parse_chain(chain), today)
-        if contract is None:
-            log.info("no viable contract for %s", candidate.symbol)
-            store.record_decision(conn, now_utc, candidate.symbol, "no_contract",
-                                  "no contract passed the gates")
-            continue
+        parsed = gates.parse_chain(chain)
+        open_now2 = store.open_positions(conn)
+        deployed = sum(p["entry_price"] * p["qty"] * gates.CONTRACT_MULTIPLIER
+                       for p in open_now2)
+
+        if decide_client is not None:
+            viable = [c for c in parsed if gates.viable(c, today) is None]
+            portfolio = {"equity": equity, "open_positions": len(open_now2),
+                        "deployed": deployed}
+            decision = decide.decide(decide_client, candidate, viable, portfolio, today)
+            if decision.action != "enter" or decision.contract is None:
+                log.info("model skipped %s: %s", candidate.symbol, decision.thesis)
+                store.record_decision(conn, now_utc, candidate.symbol, "skip",
+                                      f"confidence {decision.confidence:.2f}",
+                                      decision.thesis)
+                continue
+            contract, thesis = decision.contract, decision.thesis
+        else:
+            contract = pick_contract(parsed, today)
+            if contract is None:
+                log.info("no viable contract for %s", candidate.symbol)
+                store.record_decision(conn, now_utc, candidate.symbol, "no_contract",
+                                      "no contract passed the gates")
+                continue
+            thesis = f"move {candidate.move_adr:+.2f} ADR, rvol {candidate.rvol:.2f}"
 
         qty = gates.size_contracts(equity, contract.ask)
-        deployed = sum(p["entry_price"] * p["qty"] * gates.CONTRACT_MULTIPLIER
-                       for p in store.open_positions(conn))
         blocked = gates.approve(contract, qty, equity, deployed,
-                                len(store.open_positions(conn)),
+                                len(open_now2),
                                 now_et=_et_hhmm(now_utc), today=today)
         if blocked:
             log.info("gate rejected %s: %s", contract.symbol, blocked)
             store.record_decision(conn, now_utc, contract.symbol, "rejected", blocked)
             continue
 
-        thesis = f"move {candidate.move_adr:+.2f} ADR, rvol {candidate.rvol:.2f}"
         order = execute.build_order(contract, qty, "buy", now_utc)
         store.record_decision(conn, now_utc, contract.symbol, "entry",
                               f"{qty}x @ {contract.ask:.2f}, delta {contract.delta:.2f}",
@@ -194,10 +216,13 @@ async def _market_state(conn, sess, symbols):
     return underlyings, equity
 
 
-async def loop(dry_run: bool = True, interval: int = 60) -> None:
+async def loop(dry_run: bool = True, interval: int = 60, decide_client=None) -> None:
     """Run ticks until interrupted.
 
     Dry run by default. Going live is an explicit act, never a default.
+
+    `decide_client` is threaded straight through to tick() on every iteration -
+    None disables the LLM, in which case pick_contract() decides deterministically.
     """
     import asyncio
     from datetime import datetime, timezone
@@ -211,7 +236,8 @@ async def loop(dry_run: bool = True, interval: int = 60) -> None:
         broker = MCPBroker(sess)
         underlyings, equity = await _market_state(conn, sess, config.UNIVERSE)
         day_start = peak = equity
-        log.info("agent starting: equity %.2f, dry_run=%s", equity, dry_run)
+        log.info("agent starting: equity %.2f, dry_run=%s, llm=%s",
+                 equity, dry_run, decide_client is not None)
 
         while True:
             now = datetime.now(timezone.utc)
@@ -224,7 +250,7 @@ async def loop(dry_run: bool = True, interval: int = 60) -> None:
 
                 result = await tick(conn, broker, now_utc, today, underlyings,
                                     equity, day_start, peak, halt_file,
-                                    dry_run=dry_run)
+                                    dry_run=dry_run, decide_client=decide_client)
                 if result["exits"] or result["entries"]:
                     log.info("tick: %d exits, %d entries",
                              len(result["exits"]), len(result["entries"]))
@@ -244,11 +270,16 @@ def main() -> None:
     parser.add_argument("--live", action="store_true",
                         help="place real paper orders (default is dry run)")
     parser.add_argument("--interval", type=int, default=60)
+    parser.add_argument("--deterministic", action="store_true",
+                        help="skip the LLM decision layer; use the mid-delta "
+                             "fallback (no ANTHROPIC_API_KEY required)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    asyncio.run(loop(dry_run=not args.live, interval=args.interval))
+    decide_client = None if args.deterministic else decide.make_client()
+    asyncio.run(loop(dry_run=not args.live, interval=args.interval,
+                     decide_client=decide_client))
 
 
 if __name__ == "__main__":

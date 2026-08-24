@@ -6,7 +6,7 @@ close one costs money.
 """
 import pytest
 
-from agent import exits, run, store
+from agent import exits, run, screener, store
 
 TODAY = "2026-08-26"
 NOW = "2026-08-26T14:05:00Z"
@@ -149,3 +149,115 @@ def test_pick_contract_returns_none_when_nothing_is_viable():
         "dailyBar": {"v": 1}, "prevDailyBar": {"v": 2},   # illiquid
     }}})
     assert run.pick_contract(chain, TODAY) is None
+
+
+# --- the decide() integration -----------------------------------------------
+#
+# The entry path (screener -> chain -> contract selection -> gates -> order)
+# had no coverage through tick() even before decide() was wired in - only
+# pick_contract() itself was unit-tested in isolation. screener.scan is
+# monkeypatched so these tests don't need realistic multi-session bar data to
+# trigger a real screener signal; everything downstream of the candidate is
+# exercised for real.
+
+OPTION_SYMBOL = "SPY260911C00765000"
+
+
+def option_snap(delta=0.45, bid=1.60, ask=1.63, prev_vol=5000):
+    return {"greeks": {"delta": delta}, "impliedVolatility": 0.12,
+           "latestQuote": {"bp": bid, "ap": ask},
+           "dailyBar": {"v": 900}, "prevDailyBar": {"v": prev_vol}}
+
+
+def a_candidate():
+    return screener.Candidate(symbol="SPY", direction="call", ts_utc=NOW,
+                              price=765.0, session_open=760.0, adr=5.0,
+                              move_adr=1.0, rvol=2.0, ema=762.0)
+
+
+class FakeDecideClient:
+    """Stands in for the anthropic client decide.decide() calls."""
+
+    def __init__(self, action, symbol=None, confidence=0.7, thesis="because"):
+        self.action, self.symbol = action, symbol
+        self.confidence, self.thesis = confidence, thesis
+        self.calls = []
+
+        class Messages:
+            def create(_self, **kwargs):
+                self.calls.append(kwargs)
+                block = type("Block", (), {"type": "tool_use", "input": {
+                    "action": self.action, "symbol": self.symbol or "none",
+                    "confidence": self.confidence, "thesis": self.thesis}})()
+                return type("Resp", (), {"stop_reason": "tool_use",
+                                         "content": [block]})()
+
+        self.messages = Messages()
+
+
+async def test_tick_enters_via_decide_when_a_client_is_given(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = FakeBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+    client = FakeDecideClient(action="enter", symbol=OPTION_SYMBOL, thesis="strong setup")
+
+    result = await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                            underlyings={}, equity=100_000, day_start=100_000,
+                            peak=100_000, halt_file=tmp_path / "HALT",
+                            decide_client=client)
+
+    assert len(result["entries"]) == 1
+    assert client.calls, "decide.decide() must actually call the client"
+    order, dry_run = broker.orders[0]
+    assert order["side"] == "buy" and order["symbol"] == OPTION_SYMBOL
+    logged = store.recent_decisions(conn)
+    assert any(d["action"] == "entry" and d["thesis"] == "strong setup" for d in logged)
+
+
+async def test_tick_records_a_skip_from_decide_and_places_no_order(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = FakeBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+    client = FakeDecideClient(action="skip", thesis="not convinced")
+
+    result = await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                            underlyings={}, equity=100_000, day_start=100_000,
+                            peak=100_000, halt_file=tmp_path / "HALT",
+                            decide_client=client)
+
+    assert result["entries"] == []
+    assert broker.orders == []
+    logged = store.recent_decisions(conn)
+    assert any(d["action"] == "skip" and d["thesis"] == "not convinced" for d in logged)
+
+
+async def test_tick_falls_back_to_pick_contract_without_a_decide_client(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = FakeBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+
+    result = await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                            underlyings={}, equity=100_000, day_start=100_000,
+                            peak=100_000, halt_file=tmp_path / "HALT")
+
+    assert len(result["entries"]) == 1
+    order, _ = broker.orders[0]
+    assert order["symbol"] == OPTION_SYMBOL
+
+
+async def test_tick_still_respects_gates_when_decide_says_enter(conn, tmp_path, monkeypatch):
+    # decide() only ever offers contracts that already passed gates.viable(),
+    # so it cannot choose an illiquid one - approve() re-checks viability too,
+    # covering that case. What it can still catch is a contract sizing to zero
+    # (too expensive for the position budget), which viable() does not check.
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    expensive = {OPTION_SYMBOL: option_snap(bid=24.50, ask=25.00)}
+    broker = FakeBroker(chain={"snapshots": expensive})
+    client = FakeDecideClient(action="enter", symbol=OPTION_SYMBOL)
+
+    result = await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                            underlyings={}, equity=100_000, day_start=100_000,
+                            peak=100_000, halt_file=tmp_path / "HALT",
+                            decide_client=client)
+
+    assert result["entries"] == []
+    assert broker.orders == []
+    logged = store.recent_decisions(conn)
+    assert any(d["action"] == "rejected" and "quantity" in d["detail"] for d in logged)
