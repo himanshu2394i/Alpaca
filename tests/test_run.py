@@ -261,3 +261,41 @@ async def test_tick_still_respects_gates_when_decide_says_enter(conn, tmp_path, 
     assert broker.orders == []
     logged = store.recent_decisions(conn)
     assert any(d["action"] == "rejected" and "quantity" in d["detail"] for d in logged)
+
+
+# --- session bounds persist across a restart --------------------------------
+#
+# loop() used to set day_start = peak = equity fresh on every process boot.
+# That quietly resets both the daily-loss and drawdown baselines whenever the
+# process restarts mid-session - a crash, a deploy, or deliberately switching
+# decide_client on or off, as tonight's launch plan does.
+
+def test_session_bounds_use_current_equity_with_no_history(conn):
+    day_start, peak = run._session_bounds(conn, current_equity=100_000, today=TODAY)
+    assert day_start == 100_000 and peak == 100_000
+
+
+def test_session_bounds_recover_todays_opening_equity_after_a_restart(conn):
+    store.record_equity(conn, f"{TODAY}T13:30:00Z", 100_000)
+    store.record_equity(conn, f"{TODAY}T15:00:00Z", 101_800)
+    store.record_equity(conn, f"{TODAY}T16:45:00Z", 99_200)   # equity at "restart"
+
+    day_start, peak = run._session_bounds(conn, current_equity=99_200, today=TODAY)
+    assert day_start == 100_000          # today's first snapshot, not the restart value
+    assert peak == 101_800               # the running high, not the restart value
+
+
+def test_session_bounds_ignore_a_prior_days_equity(conn):
+    store.record_equity(conn, "2026-08-25T13:30:00Z", 100_000)
+    store.record_equity(conn, "2026-08-25T20:00:00Z", 97_000)
+
+    day_start, peak = run._session_bounds(conn, current_equity=97_500, today=TODAY)
+    assert day_start == 97_500           # no snapshot for TODAY yet -> use current
+    assert peak == 100_000               # all-time peak still carries forward
+
+
+def test_session_bounds_peak_never_falls_below_current_equity(conn):
+    # A fresh all-time high must count even if no history row reflects it yet.
+    store.record_equity(conn, f"{TODAY}T13:30:00Z", 100_000)
+    day_start, peak = run._session_bounds(conn, current_equity=103_000, today=TODAY)
+    assert peak == 103_000

@@ -186,6 +186,25 @@ def _et_hhmm(ts_utc: str) -> str:
     return t.astimezone(ET).strftime("%H:%M")
 
 
+def _session_bounds(conn, current_equity: float, today: str) -> tuple[float, float]:
+    """Day-start and all-time-peak equity, recovered from persisted history.
+
+    loop() used to set both to current_equity fresh on every process boot.
+    That silently resets the daily-loss and drawdown gates whenever the
+    process restarts mid-session - a crash, a redeploy, or deliberately
+    switching decide_client on or off, which is exactly what happens when
+    flipping from a deterministic launch to the LLM partway through a day.
+    """
+    rows = store.equity_series(conn)
+    if not rows:
+        return current_equity, current_equity
+
+    todays = [r for r in rows if r["ts_utc"][:10] == today]
+    day_start = float(todays[0]["value"]) if todays else current_equity
+    peak = max(max(float(r["value"]) for r in rows), current_equity)
+    return day_start, peak
+
+
 class MCPBroker:
     """Adapts the MCP session to the two calls tick() needs."""
 
@@ -235,14 +254,20 @@ async def loop(dry_run: bool = True, interval: int = 60, decide_client=None) -> 
     async with mcp_bridge.session() as sess:
         broker = MCPBroker(sess)
         underlyings, equity = await _market_state(conn, sess, config.UNIVERSE)
-        day_start = peak = equity
-        log.info("agent starting: equity %.2f, dry_run=%s, llm=%s",
-                 equity, dry_run, decide_client is not None)
+        boot_today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        day_start, peak = _session_bounds(conn, equity, boot_today)
+        log.info("agent starting: equity %.2f, dry_run=%s, llm=%s, "
+                 "day_start=%.2f, peak=%.2f",
+                 equity, dry_run, decide_client is not None, day_start, peak)
 
         while True:
             now = datetime.now(timezone.utc)
             now_utc = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             today = now_utc[:10]
+            if today != boot_today:
+                # Crossed a UTC date boundary since boot (overnight, between
+                # sessions) - today's baseline resets, the all-time peak does not.
+                day_start, boot_today = equity, today
             try:
                 underlyings, equity = await _market_state(conn, sess, config.UNIVERSE)
                 peak = max(peak, equity)
