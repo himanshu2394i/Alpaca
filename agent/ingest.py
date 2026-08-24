@@ -73,9 +73,20 @@ def run(conn) -> None:
     key, secret = config.api_keys()
     stream = StockDataStream(key, secret, feed=DataFeed.IEX)
 
+    # DEBUG-only per-bar logging is silent for hours outside market hours, so
+    # a process watching this log for "is the stream actually alive" cannot
+    # tell idle-and-fine apart from broken. This INFO heartbeat, roughly once
+    # a minute once the full 20-symbol universe is streaming, is that signal.
+    counter = {"n": 0}
+    HEARTBEAT_EVERY = 20
+
     async def on_bar(bar):
         store.upsert_bars(conn, [_to_row(bar.symbol, bar)])
         log.debug("bar %s %s c=%s", bar.symbol, bar.timestamp, bar.close)
+        counter["n"] += 1
+        if counter["n"] % HEARTBEAT_EVERY == 0:
+            log.info("streaming: %d bars received, latest %s %s",
+                     counter["n"], bar.symbol, bar.timestamp)
 
     stream.subscribe_bars(on_bar, *config.UNIVERSE)
     log.info("streaming %d symbols from IEX", len(config.UNIVERSE))
