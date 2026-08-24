@@ -61,7 +61,13 @@ CREATE TABLE IF NOT EXISTS decisions (
 def connect(path: Path | str) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, isolation_level=None)
+    # ingest and the trading loop are two separate writer processes on this
+    # file; Python's 5s default lock-wait is too short for a bulk warm-start
+    # write (tens of thousands of rows) to complete without a concurrent
+    # writer hitting "database is locked". 15s gives real headroom, and
+    # upsert_bars batching one write into one lock acquisition removes most
+    # of the actual contention this was masking.
+    conn = sqlite3.connect(path, isolation_level=None, timeout=15.0)
     conn.row_factory = sqlite3.Row
     # WAL lets the dashboard read while ingest writes.
     conn.execute("PRAGMA journal_mode=WAL")
@@ -74,13 +80,25 @@ def upsert_bars(conn: sqlite3.Connection, rows: Iterable[tuple]) -> int:
 
     Replay-safe: re-ingesting the same window is a no-op rather than a
     duplicate, which matters because reconnects backfill overlapping ranges.
+
+    Wrapped in one explicit transaction: under isolation_level=None
+    (autocommit), executemany with no transaction commits each row
+    individually - a large batch then holds and re-acquires the write lock
+    once per row instead of once total, and a failure partway through leaves
+    the earlier rows committed instead of rolling back.
     """
     rows = list(rows)
-    conn.executemany(
-        "INSERT OR REPLACE INTO bars (symbol, ts_utc, o, h, l, c, v) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        rows,
-    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO bars (symbol, ts_utc, o, h, l, c, v) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
     return len(rows)
 
 

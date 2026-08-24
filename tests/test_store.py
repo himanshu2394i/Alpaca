@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from agent import store
@@ -128,3 +130,17 @@ def test_open_position_accepts_a_matching_put(conn):
     store.open_position(conn, **{**POS, "symbol": "SPY260904P00765000",
                                  "right": "put"})
     assert store.open_positions(conn)[0]["right"] == "put"
+
+
+def test_upsert_bars_is_atomic_on_failure(conn):
+    # A NULL ts_utc violates the PRIMARY KEY's NOT NULL constraint. If the
+    # batch is written row-by-row under autocommit rather than as one
+    # transaction, the two good rows land before the bad one fails, and the
+    # caller is left with a partial write it never asked for.
+    good = make_bars(n=2)
+    bad = [("SPY", None, 1.0, 1.0, 1.0, 1.0, 100)]
+
+    with pytest.raises(sqlite3.Error):
+        store.upsert_bars(conn, good + bad)
+
+    assert store.recent_bars(conn, "SPY") == []
