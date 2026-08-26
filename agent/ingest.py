@@ -71,7 +71,17 @@ def run(conn) -> None:
     # screener starts tripping over holes.
     """
     key, secret = config.api_keys()
-    stream = StockDataStream(key, secret, feed=DataFeed.IEX)
+    # data_timeout is None by default, which disables alpaca-py's only defence
+    # against a "connected but mute" socket - a connection that stays
+    # TCP-ESTABLISHED while the remote side has gone silent, which the
+    # transport-level ping/pong keepalive does not catch. Without it, a dead
+    # socket can sit doing nothing indefinitely; the reconnect backoff (max
+    # 30s) never engages because no exception is ever raised to trigger it.
+    # Live: this is exactly what happened - three failures, then silence for
+    # ~19 hours spanning an entire trading session with zero bars received.
+    # 120s is generous for 1-min bars across 20 liquid symbols during RTH,
+    # and a spurious reconnect while idle outside market hours is harmless.
+    stream = StockDataStream(key, secret, feed=DataFeed.IEX, data_timeout=120.0)
 
     # DEBUG-only per-bar logging is silent for hours outside market hours, so
     # a process watching this log for "is the stream actually alive" cannot
