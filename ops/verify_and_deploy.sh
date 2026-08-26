@@ -65,7 +65,7 @@ curl -s -o /dev/null -w "HTTP:%{http_code}\n" http://127.0.0.1:8080/
 
 # Redeploy clean HEAD so runtime matches git
 echo "=== REDEPLOY CLEAN HEAD ==="
-git reset --hard origin/feat/hybrid-mtf-and-ops
+git reset --hard origin/master
 sudo cp deploy/systemd/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo chown -R ubuntu:ubuntu data/
