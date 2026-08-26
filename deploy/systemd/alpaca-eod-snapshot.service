@@ -1,0 +1,10 @@
+[Unit]
+Description=Alpaca options agent — end-of-day equity snapshot
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/alpaca-options-agent
+EnvironmentFile=/opt/alpaca-options-agent/.env
+Environment=PATH=/opt/alpaca-options-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash /opt/alpaca-options-agent/ops/eod_snapshot.sh

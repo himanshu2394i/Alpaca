@@ -47,3 +47,43 @@ def test_to_row_output_round_trips_through_the_store(conn):
     assert len(got) == 1
     assert got[0]["c"] == 1.5
     assert store.last_bar_ts(conn, "SPY") == "2026-08-24T13:30:00Z"
+
+
+def test_fill_gap_pulls_bars_from_newest_stored_ts(conn, monkeypatch):
+    from agent import store
+
+    store.upsert_bars(conn, [
+        ("SPY", "2026-08-26T14:00:00Z", 100.0, 101.0, 99.0, 100.5, 1000),
+    ])
+
+    captured = {}
+
+    class FakeClient:
+        def get_stock_bars(self, request):
+            captured["start"] = request.start
+            captured["end"] = request.end
+            ts = datetime(2026, 8, 26, 14, 1, tzinfo=timezone.utc)
+            return SimpleNamespace(data={"SPY": [fake_bar(ts, close=101.0)]})
+
+    now = datetime(2026, 8, 26, 14, 5, tzinfo=timezone.utc)
+    written = ingest.fill_gap(conn, ["SPY"], client=FakeClient(), now=now)
+
+    assert written == 1
+    # alpaca-py may normalize request.start to naive UTC
+    assert captured["start"].replace(tzinfo=timezone.utc) == datetime(
+        2026, 8, 26, 13, 59, tzinfo=timezone.utc)
+    assert store.last_bar_ts(conn, "SPY") == "2026-08-26T14:01:00Z"
+
+
+def test_fill_gap_uses_lookback_when_store_is_empty(conn):
+    captured = {}
+
+    class FakeClient:
+        def get_stock_bars(self, request):
+            captured["start"] = request.start
+            return SimpleNamespace(data={})
+
+    now = datetime(2026, 8, 26, 14, 5, tzinfo=timezone.utc)
+    assert ingest.fill_gap(conn, ["SPY"], client=FakeClient(), now=now,
+                           lookback_minutes=10) == 0
+    assert captured["start"].replace(tzinfo=timezone.utc) == now - timedelta(minutes=10)

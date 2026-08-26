@@ -1,0 +1,10 @@
+[Unit]
+Description=Run alpaca EOD snapshot after US equity close (weekdays)
+
+[Timer]
+OnCalendar=Mon..Fri 16:15:00 America/New_York
+Persistent=true
+Unit=alpaca-eod-snapshot.service
+
+[Install]
+WantedBy=timers.target

@@ -152,6 +152,29 @@ def test_drawdown_halt_outranks_daily_loss():
     assert "drawdown" in r
 
 
+# --- data staleness (RTH only) ----------------------------------------------
+
+def test_data_stale_ignored_outside_rth():
+    # 20:30 UTC = 16:30 ET in August — after the close.
+    assert gates.data_stale_reason(None, "2026-08-26T20:30:00Z") is None
+    assert gates.data_stale_reason("2026-08-26T13:00:00Z", "2026-08-26T20:30:00Z") is None
+
+
+def test_data_stale_halts_when_no_bars_during_rth():
+    # 14:05 UTC = 10:05 ET — mid-session.
+    r = gates.data_stale_reason(None, "2026-08-26T14:05:00Z")
+    assert r is not None and "no bars" in r
+
+
+def test_data_stale_halts_when_newest_bar_is_older_than_five_minutes():
+    r = gates.data_stale_reason("2026-08-26T13:55:00Z", "2026-08-26T14:05:00Z")
+    assert r is not None and "stale" in r
+
+
+def test_data_stale_passes_when_bars_are_fresh():
+    assert gates.data_stale_reason("2026-08-26T14:03:00Z", "2026-08-26T14:05:00Z") is None
+
+
 # --- final approval ---------------------------------------------------------
 
 def test_approve_passes_a_clean_trade():
