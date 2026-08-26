@@ -10,13 +10,16 @@ alpaca order cancel-all || true
 
 echo "Closing positions..."
 python - <<'PY'
-import asyncio, json, subprocess, sys
+import asyncio
 
 async def main():
     from agent import mcp_bridge
     async with mcp_bridge.session() as sess:
         positions = await mcp_bridge.call(sess, "get_all_positions", {})
-        snaps = positions.get("positions") or positions.get("snapshots") or positions
+        # Live alpaca-mcp-server uses "result"; tests / older shapes use
+        # "positions" / "snapshots".
+        snaps = (positions.get("result") or positions.get("positions")
+                 or positions.get("snapshots") or positions)
         if isinstance(snaps, dict):
             items = snaps.values()
         elif isinstance(snaps, list):
@@ -24,6 +27,8 @@ async def main():
         else:
             items = []
         for p in items:
+            if not isinstance(p, dict):
+                continue
             sym = p.get("symbol") or p.get("asset_id")
             if not sym:
                 continue
