@@ -12,7 +12,7 @@ processed before entries, and they run even when every entry path is halted.
 import logging
 from pathlib import Path
 
-from agent import config, decide, exits, execute, gates, screener, store
+from agent import config, decide, exits, execute, gates, reconcile, screener, store
 
 log = logging.getLogger(__name__)
 
@@ -76,11 +76,16 @@ async def tick(
         order = execute.build_order(contract, signal.qty, "sell", now_utc)
         log.info("EXIT %s: %s", signal.symbol, signal.reason)
         store.record_decision(conn, now_utc, signal.symbol, "exit", signal.reason)
-        await broker.place(order, dry_run=dry_run)
-        if not dry_run:
+        result = await broker.place(order, dry_run=dry_run, contract=contract,
+                                  ts_utc=now_utc)
+        if not dry_run and result.get("status") == "filled":
+            px = result.get("fill_price", contract.mid)
             store.close_position(conn, signal.symbol,
-                                 exit_price=contract.mid, exit_ts=now_utc,
+                                 exit_price=px, exit_ts=now_utc,
                                  exit_reason=signal.reason)
+        elif not dry_run and result.get("status") != "filled":
+            log.warning("exit not filled for %s: %s", signal.symbol,
+                        result.get("status"))
 
     if halt_reason:
         log.warning("halted: %s (exits still active)", halt_reason)
@@ -141,19 +146,24 @@ async def tick(
         store.record_decision(conn, now_utc, contract.symbol, "entry",
                               f"{qty}x @ {contract.ask:.2f}, delta {contract.delta:.2f}",
                               thesis)
-        await broker.place(order, dry_run=dry_run)
+        result = await broker.place(order, dry_run=dry_run, contract=contract,
+                                    ts_utc=now_utc)
         entries.append((candidate, contract, qty))
 
-        if not dry_run:
+        if not dry_run and result.get("status") == "filled":
+            fill_px = result.get("fill_price", contract.ask)
             stop, target = _entry_levels(candidate)
             store.open_position(
                 conn, symbol=contract.symbol, underlying=candidate.symbol,
-                right=candidate.direction, qty=qty, entry_price=contract.ask,
+                right=candidate.direction, qty=qty, entry_price=fill_px,
                 entry_ts=now_utc, entry_underlying=candidate.price,
                 stop_underlying=stop, target_underlying=target,
                 expiry=contract.expiry,
                 thesis=thesis,
             )
+        elif not dry_run and result.get("status") != "filled":
+            log.warning("entry not filled for %s: %s", contract.symbol,
+                        result.get("status"))
 
     return {"halted": False, "halt_reason": None,
             "exits": exit_signals, "entries": entries}
@@ -234,8 +244,9 @@ class MCPBroker:
         return await mcp_bridge.fetch_chain(self.sess, underlying, right,
                                             dte_lo, dte_hi, strike_lo, strike_hi)
 
-    async def place(self, order, dry_run=True):
-        return await execute.submit(self.sess, order, dry_run=dry_run)
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+        return await execute.submit(self.sess, order, dry_run=dry_run,
+                                    contract=contract, ts_utc=ts_utc)
 
 
 async def _market_state(conn, sess, symbols):
@@ -273,7 +284,12 @@ async def loop(dry_run: bool = True, interval: int = 60, decide_client=None) -> 
         broker = MCPBroker(sess)
         underlyings, equity = await _market_state(conn, sess, config.UNIVERSE)
         boot_today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        boot_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         day_start, peak = _session_bounds(conn, equity, boot_today)
+
+        for note in await reconcile.reconcile(conn, sess, boot_now):
+            log.warning("reconcile: %s", note)
+
         log.info("agent starting: equity %.2f, dry_run=%s, llm=%s, "
                  "day_start=%.2f, peak=%.2f",
                  equity, dry_run, decide_client is not None, day_start, peak)

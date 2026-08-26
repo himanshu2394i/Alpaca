@@ -56,6 +56,8 @@ extra filter so the agent is not starved on day one.
 - Max 2% equity per trade, 10% deployed, 5 concurrent positions
 - Daily loss halt −3%, drawdown halt −8% from peak
 - No entries after 15:30 ET
+- Live orders poll for 60s, cancel, then retry once at the ask/bid
+- On boot, local positions are reconciled against Alpaca before trading
 - Touch file `HALT` in repo root to stop entries (exits still run)
 
 ## Ops (Alpaca CLI)

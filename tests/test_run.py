@@ -25,9 +25,12 @@ class FakeBroker:
     async def fetch_chain(self, *a, **kw):
         return self.chain
 
-    async def place(self, order, dry_run=True):
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
         self.orders.append((order, dry_run))
-        return {"status": "simulated", "dry_run": dry_run, "order": order}
+        if dry_run:
+            return {"dry_run": True, "status": "simulated", "order": order}
+        return {"dry_run": False, "status": "filled",
+                "fill_price": float(order["limit_price"])}
 
 
 def open_a_losing_position(conn):
