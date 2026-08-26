@@ -155,7 +155,9 @@ class FakeMCP:
                     "client_order_id": args["client_order_id"]}
         elif name == "get_order_by_client_id":
             status = self.statuses.pop(0) if self.statuses else "filled"
-            data = {"id": "ord-1", "status": status, "filled_avg_price": "1.62"}
+            data = {"id": "ord-1", "status": status, "filled_avg_price": "1.62",
+                    "filled_qty": "7" if status in ("filled", "partially_filled")
+                    else "0"}
         elif name == "cancel_order_by_id":
             data = {"id": args["order_id"], "status": "canceled"}
         else:
@@ -191,3 +193,14 @@ async def test_submit_abandons_when_both_attempts_fail():
     result = await execute.submit(sess, order, dry_run=False, contract=contract(),
                                   ts_utc=TS, poll_seconds=0.05, poll_interval=0.01)
     assert result["status"] == "abandoned"
+
+
+async def test_filled_status_with_zero_filled_qty_is_not_a_fill():
+    # A "filled" row with no size must not open a local position - that is how
+    # ghost positions appear after the next reconcile.
+    assert execute.is_filled({"status": "filled", "filled_qty": "0",
+                              "filled_avg_price": "1.62"}) is False
+    assert execute.is_filled({"status": "filled", "filled_qty": "2",
+                              "filled_avg_price": "1.62"}) is True
+    assert execute.is_filled({"status": "partially_filled", "filled_qty": "1",
+                              "filled_avg_price": "1.62"}) is True

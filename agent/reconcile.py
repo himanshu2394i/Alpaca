@@ -10,7 +10,18 @@ _OCC = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
 
 def _option_positions(payload: dict) -> dict[str, dict]:
     """Extract open option positions keyed by OCC symbol."""
-    rows = payload.get("positions") or payload.get("snapshots") or payload
+    # "result" is what alpaca-mcp-server actually returns; the other two keys
+    # are kept for the shapes the tests and older builds use. Falling through to
+    # `payload` itself yields dict values that are lists, every one of which is
+    # skipped below - so a missing key here silently means "no positions at the
+    # broker", and reconcile() then closes every real position as a ghost.
+    rows = None
+    for key in ("result", "positions", "snapshots"):
+        if key in payload and isinstance(payload[key], (dict, list)):
+            rows = payload[key]
+            break
+    if rows is None:
+        rows = payload
     if isinstance(rows, dict):
         items = rows.values()
     elif isinstance(rows, list):
@@ -51,12 +62,34 @@ def _import_position(conn, symbol: str, remote: dict, now_utc: str) -> None:
                           f"imported {qty}x from broker")
 
 
+def _broker_positions_usable(payload: dict) -> bool:
+    """False when the broker response cannot be trusted as a full snapshot.
+
+    An error or empty/malformed envelope must not look like "zero positions",
+    or every real local row gets closed as a ghost.
+    """
+    if not isinstance(payload, dict) or not payload:
+        return False
+    if payload.get("error"):
+        return False
+    for key in ("result", "positions", "snapshots"):
+        if key in payload and isinstance(payload[key], (dict, list)):
+            return True
+    return False
+
+
 async def reconcile(conn, sess, now_utc: str) -> list[str]:
     """Align local open positions with Alpaca before trading resumes."""
     from agent import mcp_bridge
 
     notes: list[str] = []
     payload = await mcp_bridge.call(sess, "get_all_positions", {})
+    if not _broker_positions_usable(payload):
+        msg = "broker positions unavailable; skipped ghost closes"
+        log.warning("%s: %s", msg, payload)
+        notes.append(msg)
+        return notes
+
     remote = _option_positions(payload)
     local = {p["symbol"]: dict(p) for p in store.open_positions(conn)}
 

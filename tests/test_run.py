@@ -292,6 +292,48 @@ async def test_tick_still_respects_gates_when_decide_says_enter(conn, tmp_path, 
     assert any(d["action"] == "rejected" and "quantity" in d["detail"] for d in logged)
 
 
+class UnfilledBroker(FakeBroker):
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+        self.orders.append((order, dry_run))
+        if dry_run:
+            return {"dry_run": True, "status": "simulated", "order": order}
+        return {"dry_run": False, "status": "abandoned", "order": order}
+
+
+async def test_live_entry_is_logged_only_after_a_fill(conn, tmp_path, monkeypatch):
+    seed_fresh_bars(conn)
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = FakeBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+
+    await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                   underlyings={}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT", dry_run=False)
+
+    logged = store.recent_decisions(conn)
+    assert any(d["action"] == "entry" for d in logged)
+    assert len(store.open_positions(conn)) == 1
+
+
+async def test_live_unfilled_order_does_not_log_entry_or_open_a_position(
+        conn, tmp_path, monkeypatch):
+    # Live today: AAPL was logged as "entry" even though the limit never filled.
+    # The decision log must only say entry when money actually moved.
+    seed_fresh_bars(conn)
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = UnfilledBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+
+    result = await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                            underlyings={}, equity=100_000, day_start=100_000,
+                            peak=100_000, halt_file=tmp_path / "HALT",
+                            dry_run=False)
+
+    assert result["entries"] == []
+    assert store.open_positions(conn) == []
+    logged = store.recent_decisions(conn)
+    assert not any(d["action"] == "entry" for d in logged)
+    assert any(d["action"] == "abandoned" for d in logged)
+
+
 # --- session bounds persist across a restart --------------------------------
 #
 # loop() used to set day_start = peak = equity fresh on every process boot.
