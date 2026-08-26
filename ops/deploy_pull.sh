@@ -2,7 +2,8 @@
 set -euo pipefail
 cd /opt/alpaca-options-agent
 git fetch origin
-git reset --hard origin/feat/hybrid-mtf-and-ops
+git checkout master
+git reset --hard origin/master
 sudo cp deploy/systemd/*.service /etc/systemd/system/
 sudo cp deploy/systemd/*.timer /etc/systemd/system/ 2>/dev/null || true
 sudo systemctl daemon-reload
