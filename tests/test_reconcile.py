@@ -55,3 +55,48 @@ async def test_reconcile_imports_a_broker_position_missing_locally(conn):
     assert open_now[0]["symbol"] == SYM
     assert open_now[0]["qty"] == 3
     assert any("imported" in n for n in notes)
+
+
+def test_option_positions_reads_the_shape_the_mcp_server_actually_returns():
+    # Captured verbatim from alpaca-mcp-server 3.4.7 get_all_positions.
+    # The payload is keyed "result", not "positions" - the mock shape used by
+    # the other tests in this file never occurs in production, so this parser
+    # returned {} for every live call and reconcile() closed every real
+    # position as a ghost.
+    payload = {"result": [{
+        "asset_id": "b1a79dd4-b409-4622-ae18-d3a96cb4b6cc",
+        "symbol": "MSFT260918C00500000",
+        "asset_class": "us_option",
+        "qty": "1", "qty_available": "1",
+        "avg_entry_price": "10.2", "side": "long",
+        "market_value": "1090", "cost_basis": "1020",
+        "unrealized_pl": "70", "current_price": "10.9",
+    }]}
+
+    found = reconcile._option_positions(payload)
+    assert "MSFT260918C00500000" in found, "live broker position not seen"
+    assert found["MSFT260918C00500000"]["qty"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_ghost_closes_when_broker_payload_is_unusable(conn):
+    # An error / malformed payload must not look like "broker has zero
+    # positions" - that would wipe every real local row as a ghost.
+    store.open_position(
+        conn, symbol=SYM, underlying="SPY", right="call", qty=2,
+        entry_price=2.0, entry_ts=NOW, entry_underlying=765.0,
+        stop_underlying=760.0, target_underlying=775.0, expiry="2026-09-04",
+    )
+
+    class ErrSession(FakeSession):
+        async def call_tool(self, name, args):
+            import json
+            self.calls.append((name, args))
+            data = {"error": "upstream timeout"}
+            return type("R", (), {"content": [type("C", (), {
+                "text": json.dumps(data)})()]})()
+
+    notes = await reconcile.reconcile(conn, ErrSession([]), NOW)
+
+    assert len(store.open_positions(conn)) == 1
+    assert any("skipped" in n.lower() or "unavailable" in n.lower() for n in notes)

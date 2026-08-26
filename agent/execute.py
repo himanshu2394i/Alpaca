@@ -69,6 +69,19 @@ def order_status(raw: dict) -> str:
     return str(_order_payload(raw).get("status", "")).lower()
 
 
+def filled_qty(raw: dict) -> float:
+    qty = _order_payload(raw).get("filled_qty")
+    try:
+        return float(qty) if qty not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_filled(raw: dict) -> bool:
+    """True only when status is filled/partial and size actually moved."""
+    return order_status(raw) in FILLED and filled_qty(raw) > 0
+
+
 def order_id(raw: dict) -> str | None:
     oid = _order_payload(raw).get("id")
     return str(oid) if oid else None
@@ -91,8 +104,7 @@ async def _poll_fill(sess, client_order_id: str, poll_seconds: float,
     while time.monotonic() < deadline:
         last = await mcp_bridge.call(sess, "get_order_by_client_id",
                                      {"client_order_id": client_order_id})
-        status = order_status(last)
-        if status in FILLED or status in DEAD:
+        if is_filled(last) or order_status(last) in DEAD:
             return last
         await asyncio.sleep(poll_interval)
     return last or None
@@ -118,7 +130,7 @@ async def _attempt(sess, order: dict, contract: Contract, poll_seconds: float,
 
     polled = await _poll_fill(sess, order["client_order_id"], poll_seconds,
                             poll_interval)
-    if polled and order_status(polled) in FILLED:
+    if polled and is_filled(polled):
         fallback = float(order["limit_price"])
         return {"dry_run": False, "status": "filled", "order": order,
                 "fill_price": fill_price(polled, fallback), "result": polled}

@@ -145,27 +145,32 @@ async def tick(
             continue
 
         order = execute.build_order(contract, qty, "buy", now_utc)
-        store.record_decision(conn, now_utc, contract.symbol, "entry",
-                              f"{qty}x @ {contract.ask:.2f}, delta {contract.delta:.2f}",
-                              thesis)
         result = await broker.place(order, dry_run=dry_run, contract=contract,
                                     ts_utc=now_utc)
-        entries.append((candidate, contract, qty))
+        status = result.get("status")
+        detail = (f"{qty}x @ {contract.ask:.2f}, delta {contract.delta:.2f}")
 
-        if not dry_run and result.get("status") == "filled":
-            fill_px = result.get("fill_price", contract.ask)
-            stop, target = _entry_levels(candidate)
-            store.open_position(
-                conn, symbol=contract.symbol, underlying=candidate.symbol,
-                right=candidate.direction, qty=qty, entry_price=fill_px,
-                entry_ts=now_utc, entry_underlying=candidate.price,
-                stop_underlying=stop, target_underlying=target,
-                expiry=contract.expiry,
-                thesis=thesis,
-            )
-        elif not dry_run and result.get("status") != "filled":
-            log.warning("entry not filled for %s: %s", contract.symbol,
-                        result.get("status"))
+        if dry_run or status == "filled":
+            store.record_decision(conn, now_utc, contract.symbol, "entry",
+                                  detail, thesis)
+            entries.append((candidate, contract, qty))
+            if not dry_run and status == "filled":
+                fill_px = result.get("fill_price", contract.ask)
+                stop, target = _entry_levels(candidate)
+                store.open_position(
+                    conn, symbol=contract.symbol, underlying=candidate.symbol,
+                    right=candidate.direction, qty=qty, entry_price=fill_px,
+                    entry_ts=now_utc, entry_underlying=candidate.price,
+                    stop_underlying=stop, target_underlying=target,
+                    expiry=contract.expiry,
+                    thesis=thesis,
+                )
+        else:
+            action = status if status in ("abandoned", "unfilled", "rejected") \
+                else "unfilled"
+            store.record_decision(conn, now_utc, contract.symbol, action,
+                                  detail, thesis)
+            log.warning("entry not filled for %s: %s", contract.symbol, status)
 
     return {"halted": False, "halt_reason": None,
             "exits": exit_signals, "entries": entries}
