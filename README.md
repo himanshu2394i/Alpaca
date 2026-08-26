@@ -62,13 +62,27 @@ extra filter so the agent is not starved on day one.
 
 ## Ops (Alpaca CLI)
 
-Requires [Alpaca CLI](https://docs.alpaca.markets/docs/alpaca-cli) on the VM:
+Requires [Alpaca CLI](https://docs.alpaca.markets/docs/alpaca-cli) on the VM.
+Trading path uses **Alpaca MCP**; these scripts use the **CLI** for ops and demos:
 
 ```bash
+ops/cli_demo.sh        # account + clock + positions (judge-facing smoke)
 ops/eod_snapshot.sh    # equity snapshot to logs/
 ops/health.sh          # bars freshness + process check
 ops/flatten.sh         # emergency close all positions
+ops/live_health.py     # SQLite + service health summary
 ```
+
+## Hackathon submission
+
+| Artifact | Location |
+|----------|----------|
+| One-page write-up | [`docs/submission/ONE_PAGER.md`](docs/submission/ONE_PAGER.md) |
+| Submit checklist | [`docs/submission/CHECKLIST.md`](docs/submission/CHECKLIST.md) |
+| Social post drafts | [`docs/submission/SOCIAL_DRAFTS.md`](docs/submission/SOCIAL_DRAFTS.md) |
+| Demo / slides outline | [`docs/submission/DEMO_OUTLINE.md`](docs/submission/DEMO_OUTLINE.md) |
+
+Competition requires a **fresh $100k paper account** (created at/after kickoff). Do not submit the pre-kickoff throwaway account.
 
 ## Deploy (systemd)
 
