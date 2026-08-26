@@ -58,6 +58,15 @@ def test_last_bar_ts(conn):
     assert store.last_bar_ts(conn, "SPY") == "2026-08-24T13:32:00Z"
 
 
+def test_newest_bar_ts_across_symbols(conn):
+    assert store.newest_bar_ts(conn) is None
+    store.upsert_bars(conn, make_bars("SPY", n=2))
+    store.upsert_bars(conn, [
+        ("QQQ", "2026-08-24T14:00:00Z", 400.0, 401.0, 399.0, 400.5, 2000),
+    ])
+    assert store.newest_bar_ts(conn) == "2026-08-24T14:00:00Z"
+
+
 # --- positions --------------------------------------------------------------
 
 POS = dict(

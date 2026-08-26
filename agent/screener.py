@@ -33,6 +33,7 @@ TRIGGER = {
     "rvol_lookback_days": 5,
     "adr_lookback_days": 10,
     "min_session_bars": 20,     # do not judge a session on its first few minutes
+    "mtf_enabled": True,          # hybrid Supertrend/RSI/EMA confirmation
 }
 
 LIMITS = {
@@ -54,6 +55,9 @@ class Candidate:
     move_adr: float         # signed, in average daily ranges
     rvol: float
     ema: float
+    alert_high: float | None = None   # 4H alert candle high (cousin setup)
+    alert_low: float | None = None    # 4H alert candle low -> stop reference
+    mtf_note: str = ""
 
 
 def _parse(ts: str) -> datetime:
@@ -106,9 +110,21 @@ def evaluate(bars, session_date: str, trigger: dict = TRIGGER) -> Candidate | No
     if not going_up and price >= ema:
         return None
 
+    direction = "call" if going_up else "put"
+    alert_high, alert_low, mtf_note = None, None, ""
+
+    if trigger.get("mtf_enabled", True):
+        ok, ctx = indicators.mtf_confirm(bars, price, direction)
+        if ok is False:
+            return None
+        if ok is True:
+            alert_high = ctx.get("alert_high")
+            alert_low = ctx.get("alert_low")
+            mtf_note = ctx.get("note", "")
+
     return Candidate(
         symbol=str(last["symbol"]),
-        direction="call" if going_up else "put",
+        direction=direction,
         ts_utc=str(last["ts_utc"]),
         price=price,
         session_open=open_px,
@@ -116,6 +132,9 @@ def evaluate(bars, session_date: str, trigger: dict = TRIGGER) -> Candidate | No
         move_adr=move_adr,
         rvol=rvol,
         ema=ema,
+        alert_high=alert_high,
+        alert_low=alert_low,
+        mtf_note=mtf_note,
     )
 
 

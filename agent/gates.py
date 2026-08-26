@@ -10,7 +10,7 @@ if this module says so.
 """
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 
 RISK = {
     "max_position_pct":  0.02,    # $2,000 per trade on $100k
@@ -23,7 +23,10 @@ RISK = {
     "min_prev_volume":  500,      # prior-session contract volume
     "max_spread_pct":   0.10,     # bid-ask as a fraction of mid
     "delta_range":      (0.35, 0.55),
+    "stale_bars_sec":   300,      # no bars for 5 min during RTH -> halt entries
 }
+
+_TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 CONTRACT_MULTIPLIER = 100
 
@@ -156,6 +159,35 @@ def halt_reason(
         if day <= risk["daily_loss_halt"]:
             return f"daily loss {day:.1%} (limit {risk['daily_loss_halt']:.0%})"
 
+    return None
+
+
+def data_stale_reason(
+    newest_bar_ts: str | None,
+    now_utc: str,
+    risk: dict = RISK,
+) -> str | None:
+    """Why entries are halted for stale market data, or None.
+
+    Only applies during RTH. Overnight and weekends the tape is quiet by
+    definition; a missing bar then is not a feed failure. During the session,
+    no bars (or bars older than stale_bars_sec) means the agent must not open
+    new risk — exits still run separately.
+    """
+    from agent.indicators import _is_rth
+
+    if not _is_rth(now_utc):
+        return None
+
+    max_age = int(risk["stale_bars_sec"])
+    if newest_bar_ts is None:
+        return f"no bars in store during RTH (staleness limit {max_age}s)"
+
+    now = datetime.strptime(now_utc, _TS_FMT).replace(tzinfo=timezone.utc)
+    newest = datetime.strptime(newest_bar_ts, _TS_FMT).replace(tzinfo=timezone.utc)
+    age = (now - newest).total_seconds()
+    if age > max_age:
+        return f"bars stale by {int(age)}s (limit {max_age}s); newest {newest_bar_ts}"
     return None
 
 

@@ -141,3 +141,201 @@ def avg_daily_range(
         for d in recent
     ]
     return float(sum(ranges) / len(ranges))
+
+
+# --- multi-timeframe (hybrid screener filters) ------------------------------
+#
+# Cousin's Supertrend/RSI/EMA rules, applied as confirmation on top of the
+# intraday momentum screener. When history is too thin to compute a filter,
+# we fail open (return None) so warmup does not starve the agent.
+
+MTF = {
+    "enabled": True,
+    "supertrend_period": 10,
+    "supertrend_mult": 3.0,
+    "rsi_period": 14,
+    "ema_slow_15m": 200,
+    "min_4h_bars": 11,
+    "min_15m_bars": 200,
+    "require_rsi_cross": False,
+}
+
+
+def resample_bars(bars: Sequence[dict], rule: str) -> list[dict]:
+    """Aggregate 1-min (or finer) bars into `rule` OHLCV bars, oldest first."""
+    if not bars:
+        return []
+    df = _frame(bars)
+    df["ts"] = pd.to_datetime(df["ts_utc"], utc=True)
+    df = df.set_index("ts").sort_index()
+    ohlcv = df.resample(rule, label="right", closed="right").agg(
+        {"o": "first", "h": "max", "l": "min", "c": "last", "v": "sum"}
+    ).dropna(subset=["c"])
+    symbol = str(bars[0].get("symbol", ""))
+    out = []
+    for ts, row in ohlcv.iterrows():
+        out.append(
+            {
+                "symbol": symbol,
+                "ts_utc": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "o": float(row["o"]),
+                "h": float(row["h"]),
+                "l": float(row["l"]),
+                "c": float(row["c"]),
+                "v": int(row["v"]),
+            }
+        )
+    return out
+
+
+def rsi(bars: Sequence[dict], period: int = 14) -> float:
+    """Wilder RSI on closes; returns the final value."""
+    if len(bars) < period + 1:
+        raise ValueError(f"need at least {period + 1} bars, got {len(bars)}")
+    closes = _frame(bars)["c"]
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi_series = 100 - (100 / (1 + rs))
+    rsi_series = rsi_series.fillna(100.0)
+    return float(rsi_series.iloc[-1])
+
+
+def rsi_cross_above(bars: Sequence[dict], level: float = 50.0,
+                    period: int = 14) -> bool:
+    """True when RSI crossed from below `level` to at/above it on the last bar."""
+    if len(bars) < period + 2:
+        return False
+    closes = _frame(bars)["c"]
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi_series = (100 - (100 / (1 + rs))).fillna(100.0)
+    prev, curr = float(rsi_series.iloc[-2]), float(rsi_series.iloc[-1])
+    return prev < level <= curr
+
+
+def supertrend(bars: Sequence[dict], period: int = 10,
+               multiplier: float = 3.0) -> dict:
+    """Latest Supertrend value and direction (+1 bullish, -1 bearish)."""
+    if len(bars) < period + 1:
+        raise ValueError(f"need at least {period + 1} bars, got {len(bars)}")
+    df = _frame(bars)
+    prev_close = df["c"].shift(1)
+    true_range = pd.concat(
+        [
+            df["h"] - df["l"],
+            (df["h"] - prev_close).abs(),
+            (df["l"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr_series = true_range.ewm(alpha=1 / period, adjust=False).mean()
+    hl2 = (df["h"] + df["l"]) / 2
+    basic_upper = hl2 + multiplier * atr_series
+    basic_lower = hl2 - multiplier * atr_series
+
+    final_upper = basic_upper.copy()
+    final_lower = basic_lower.copy()
+    direction = pd.Series(index=df.index, dtype=int)
+
+    for i in range(1, len(df)):
+        if basic_upper.iloc[i] < final_upper.iloc[i - 1] or df["c"].iloc[i - 1] > final_upper.iloc[i - 1]:
+            final_upper.iloc[i] = basic_upper.iloc[i]
+        else:
+            final_upper.iloc[i] = final_upper.iloc[i - 1]
+
+        if basic_lower.iloc[i] > final_lower.iloc[i - 1] or df["c"].iloc[i - 1] < final_lower.iloc[i - 1]:
+            final_lower.iloc[i] = basic_lower.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i - 1]
+
+        if df["c"].iloc[i] > final_upper.iloc[i - 1]:
+            direction.iloc[i] = 1
+        elif df["c"].iloc[i] < final_lower.iloc[i - 1]:
+            direction.iloc[i] = -1
+        else:
+            direction.iloc[i] = direction.iloc[i - 1]
+
+    if pd.isna(direction.iloc[0]):
+        direction.iloc[0] = 1
+
+    last_dir = int(direction.iloc[-1])
+    st_val = float(final_lower.iloc[-1] if last_dir == 1 else final_upper.iloc[-1])
+    return {"value": st_val, "direction": last_dir}
+
+
+def mtf_confirm(bars: Sequence[dict], price: float, direction: str,
+                config: dict | None = None) -> tuple[bool | None, dict]:
+    """Hybrid MTF filter from the Supertrend/RSI/EMA setup.
+
+    Returns (True, ctx) when filters confirm, (False, ctx) when they reject,
+    and (None, ctx) when there is not enough history to compute them (caller
+    should skip the filter rather than block the trade).
+    """
+    cfg = config or MTF
+    ctx: dict = {"alert_high": None, "alert_low": None, "reason": "", "note": ""}
+
+    rth = rth_bars(bars)
+    bars_4h = resample_bars(rth, "4h")
+    bars_15m = resample_bars(rth, "15min")
+
+    if len(bars_4h) < cfg["min_4h_bars"] or len(bars_15m) < cfg["min_15m_bars"]:
+        ctx["reason"] = "insufficient history"
+        return None, ctx
+
+    try:
+        st = supertrend(bars_4h, period=cfg["supertrend_period"],
+                        multiplier=cfg["supertrend_mult"])
+        rsi_val = rsi(bars_4h, period=cfg["rsi_period"])
+        ema200 = ema(bars_15m, period=cfg["ema_slow_15m"])
+    except ValueError:
+        ctx["reason"] = "insufficient history"
+        return None, ctx
+
+    last_4h = bars_4h[-1]
+    ctx["alert_high"] = float(last_4h["h"])
+    ctx["alert_low"] = float(last_4h["l"])
+
+    if direction == "call":
+        if st["direction"] != 1 or last_4h["c"] <= st["value"]:
+            ctx["reason"] = "4H not above Supertrend"
+            return False, ctx
+        if rsi_val < 50:
+            ctx["reason"] = f"4H RSI {rsi_val:.1f} below 50"
+            return False, ctx
+        if cfg["require_rsi_cross"] and not rsi_cross_above(
+            bars_4h, level=50, period=cfg["rsi_period"]
+        ):
+            ctx["reason"] = "4H RSI has not freshly crossed above 50"
+            return False, ctx
+        if price <= ema200:
+            ctx["reason"] = f"entry {price:.2f} below 15m EMA200 {ema200:.2f}"
+            return False, ctx
+        cross = rsi_cross_above(bars_4h, level=50, period=cfg["rsi_period"])
+        ctx["note"] = f"MTF ok: 4H ST bullish, RSI {rsi_val:.0f}" + (
+            ", fresh RSI cross" if cross else ""
+        )
+        return True, ctx
+
+    if direction == "put":
+        if st["direction"] != -1 or last_4h["c"] >= st["value"]:
+            ctx["reason"] = "4H not below Supertrend"
+            return False, ctx
+        if rsi_val > 50:
+            ctx["reason"] = f"4H RSI {rsi_val:.1f} above 50"
+            return False, ctx
+        if price >= ema200:
+            ctx["reason"] = f"entry {price:.2f} above 15m EMA200 {ema200:.2f}"
+            return False, ctx
+        ctx["note"] = f"MTF ok: 4H ST bearish, RSI {rsi_val:.0f}"
+        return True, ctx
+
+    ctx["reason"] = f"unknown direction {direction!r}"
+    return False, ctx

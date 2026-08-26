@@ -31,17 +31,27 @@ def _to_row(symbol: str, bar) -> tuple:
     )
 
 
-def warm_start(conn, symbols: list[str], days: int = 12) -> int:
+WARM_START_DAYS = 25
+"""Calendar days of 1-minute history to backfill at boot.
+
+Sized off the *slowest* consumer, not the fastest. rvol(lookback_days=5) needs
+~12 calendar days, but indicators.mtf_confirm() needs 200 15-minute bars for the
+EMA200 - roughly 8 sessions - and it FAILS OPEN when short, silently dropping
+the 4H/15m confirmation instead of blocking the trade. 25 calendar days is ~18
+sessions, about 2x margin, so a symbol added to UNIVERSE is filtered on its
+first day rather than trading unconfirmed.
+"""
+
+
+def warm_start(conn, symbols: list[str], days: int = WARM_START_DAYS) -> int:
     """Backfill recent 1-minute bars so indicators are live immediately.
 
     One multi-symbol request, not one per symbol: the free tier allows 200 REST
     calls per minute and there is no reason to spend 20 of them. The 15-minute
     REST delay does not matter here because this is history, not a live price.
 
-    `days` is CALENDAR days, not sessions. 12 calendar days guarantees at least
-    6 trading sessions across a weekend and a public holiday, which is what
-    indicators.rvol(lookback_days=5) needs: five prior sessions plus today.
-    Asking for 5 here yields 3-4 sessions and rvol silently degrades.
+    `days` is CALENDAR days, not sessions. See WARM_START_DAYS for why the
+    default is sized off the MTF filter rather than off rvol.
     """
     key, secret = config.api_keys()
     client = StockHistoricalDataClient(key, secret)
@@ -60,16 +70,107 @@ def warm_start(conn, symbols: list[str], days: int = 12) -> int:
     return written
 
 
+def fill_gap(
+    conn,
+    symbols: list[str],
+    *,
+    client=None,
+    now: datetime | None = None,
+    lookback_minutes: int = 30,
+) -> int:
+    """REST-backfill recent bars to close holes left by a websocket reconnect.
+
+    Starts from the newest stored bar (minus one minute of overlap) or from
+    `lookback_minutes` ago when the store is empty. Safe to call repeatedly:
+    upserts are idempotent.
+    """
+    now = now or datetime.now(timezone.utc)
+    newest = store.newest_bar_ts(conn)
+    if newest:
+        start = datetime.strptime(newest, TS_FMT).replace(tzinfo=timezone.utc)
+        start = start - timedelta(minutes=1)
+    else:
+        start = now - timedelta(minutes=lookback_minutes)
+
+    if start >= now:
+        return 0
+
+    if client is None:
+        key, secret = config.api_keys()
+        client = StockHistoricalDataClient(key, secret)
+
+    request = StockBarsRequest(
+        symbol_or_symbols=list(symbols),
+        timeframe=TimeFrame.Minute,
+        start=start,
+        end=now,
+        feed=DataFeed.IEX,
+    )
+    barset = client.get_stock_bars(request)
+    rows = [_to_row(sym, bar) for sym, series in barset.data.items() for bar in series]
+    written = store.upsert_bars(conn, rows)
+    if written:
+        log.info("gap fill: %d bars since %s", written, start.strftime(TS_FMT))
+    return written
+
+
+RECONNECT_BASE_DELAY = 5.0
+RECONNECT_MAX_DELAY = 120.0
+# A stream must survive at least this long to count as "it actually
+# connected" rather than "failed immediately" - see _backoff_delay.
+RECONNECT_RESET_AFTER = 60.0
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Seconds to wait before reconnect attempt `attempt` (1-indexed).
+
+    Live: a flat 5s retry against Alpaca's "connection limit exceeded"
+    hammered the API every ~20-30s for over an hour straight without ever
+    recovering, because the server needs longer than 5s to release a stale
+    connection slot for the same API key - every retry landed while the
+    prior one was still being counted, a self-sustaining lockout rather
+    than a transient failure. Exponential backoff, capped, gives the server
+    room to actually clear the slot.
+    """
+    return min(RECONNECT_MAX_DELAY, RECONNECT_BASE_DELAY * (2 ** attempt))
+
+
 def run(conn) -> None:
     """Subscribe to 1-minute bars for the universe and write each to SQLite.
 
-    Blocks until interrupted. alpaca-py's own run() owns the event loop and
-    already reconnects with backoff, so we do not write a retry loop here.
-
-    # ponytail: an in-process reconnect leaves a gap in `bars`; only a process
-    # restart backfills it via warm_start. Add a periodic gap-filler if the
-    # screener starts tripping over holes.
+    Blocks until interrupted. On stream exit (timeout / disconnect that
+    escapes alpaca-py's internal reconnect), REST-fill any gap and restart.
     """
+    import time
+
+    attempt = 0
+    while True:
+        started = time.monotonic()
+        try:
+            _stream_once(conn)
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            log.exception("stream stopped; filling gap before reconnect")
+
+        try:
+            fill_gap(conn, config.UNIVERSE)
+        except Exception:
+            log.exception("gap fill failed")
+
+        # A stream that ran a while before failing was a real, working
+        # connection - a later, unrelated failure should not inherit a
+        # backoff built up from an earlier connection-limit lockout.
+        if time.monotonic() - started > RECONNECT_RESET_AFTER:
+            attempt = 0
+        attempt += 1
+
+        delay = _backoff_delay(attempt)
+        log.warning("reconnecting in %.0fs (attempt %d)", delay, attempt)
+        time.sleep(delay)
+
+
+def _stream_once(conn) -> None:
     key, secret = config.api_keys()
     # data_timeout is None by default, which disables alpaca-py's only defence
     # against a "connected but mute" socket - a connection that stays
@@ -97,6 +198,15 @@ def run(conn) -> None:
         if counter["n"] % HEARTBEAT_EVERY == 0:
             log.info("streaming: %d bars received, latest %s %s",
                      counter["n"], bar.symbol, bar.timestamp)
+
+    if len(config.UNIVERSE) > config.MAX_WS_SYMBOLS:
+        # Alpaca rejects the whole subscription past the plan cap rather than
+        # trimming it, so an oversized UNIVERSE means no bars at all. Fail here,
+        # loudly, instead of discovering it as a staleness halt mid-session.
+        raise ValueError(
+            f"UNIVERSE has {len(config.UNIVERSE)} symbols, "
+            f"cap is {config.MAX_WS_SYMBOLS}"
+        )
 
     stream.subscribe_bars(on_bar, *config.UNIVERSE)
     log.info("streaming %d symbols from IEX", len(config.UNIVERSE))
