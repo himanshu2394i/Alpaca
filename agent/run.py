@@ -145,8 +145,7 @@ async def tick(
         entries.append((candidate, contract, qty))
 
         if not dry_run:
-            stop, target = exits.levels(candidate.price, candidate.adr,
-                                        candidate.direction)
+            stop, target = _entry_levels(candidate)
             store.open_position(
                 conn, symbol=contract.symbol, underlying=candidate.symbol,
                 right=candidate.direction, qty=qty, entry_price=contract.ask,
@@ -158,6 +157,25 @@ async def tick(
 
     return {"halted": False, "halt_reason": None,
             "exits": exit_signals, "entries": entries}
+
+
+def _entry_levels(candidate) -> tuple[float, float]:
+    """Stop/target for a new position.
+
+    When the hybrid MTF filter supplied a 4H alert range, use alert low/high
+    for a 1:2 reward-to-risk (cousin's rule). Otherwise fall back to ADR levels.
+    """
+    if candidate.direction == "call" and candidate.alert_low is not None:
+        stop = candidate.alert_low
+        risk = candidate.price - stop
+        if risk > 0:
+            return stop, candidate.price + 2 * risk
+    if candidate.direction == "put" and candidate.alert_high is not None:
+        stop = candidate.alert_high
+        risk = stop - candidate.price
+        if risk > 0:
+            return stop, candidate.price - 2 * risk
+    return exits.levels(candidate.price, candidate.adr, candidate.direction)
 
 
 def _contract_for_exit(position, premium: float | None) -> gates.Contract:

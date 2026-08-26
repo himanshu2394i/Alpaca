@@ -1,0 +1,13 @@
+[Unit]
+Description=Alpaca options agent — dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/alpaca-options-agent
+ExecStart=/opt/alpaca-options-agent/.venv/bin/python -m agent.dashboard --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

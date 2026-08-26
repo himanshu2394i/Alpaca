@@ -1,0 +1,15 @@
+[Unit]
+Description=Alpaca options agent — market data ingest
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/alpaca-options-agent
+EnvironmentFile=/opt/alpaca-options-agent/.env
+ExecStart=/opt/alpaca-options-agent/.venv/bin/python -m agent.ingest
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

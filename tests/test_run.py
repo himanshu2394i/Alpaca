@@ -270,6 +270,17 @@ async def test_tick_still_respects_gates_when_decide_says_enter(conn, tmp_path, 
 # process restarts mid-session - a crash, a deploy, or deliberately switching
 # decide_client on or off, as tonight's launch plan does.
 
+def test_entry_levels_use_4h_alert_range_when_available():
+    c = screener.Candidate(
+        symbol="SPY", direction="call", ts_utc="2026-08-24T18:00:00Z",
+        price=105.0, session_open=100.0, adr=10.0, move_adr=0.8, rvol=2.0,
+        ema=104.0, alert_high=108.0, alert_low=100.0,
+    )
+    stop, target = run._entry_levels(c)
+    assert stop == 100.0
+    assert target == pytest.approx(115.0)
+
+
 def test_session_bounds_use_current_equity_with_no_history(conn):
     day_start, peak = run._session_bounds(conn, current_equity=100_000, today=TODAY)
     assert day_start == 100_000 and peak == 100_000
