@@ -1,12 +1,12 @@
 # Project Memory — Alpaca Options Agent
 
-**Last updated:** 2026-08-26 (pre-open IST)  
+**Last updated:** 2026-08-27 (pre-kickoff IST)  
 **Event:** lablab.ai × Alpaca AI Trading Agents Hackathon  
 **Competition window:** 2026-08-31 → 2026-09-04 (ET)  
-**Kickoff:** 2026-08-28  
+**Kickoff:** 2026-08-28 20:30 IST  
 **Repo:** https://github.com/himanshu2394i/Alpaca  
 **Default branch:** `master`  
-**Active feature branch:** `feat/hybrid-mtf-and-ops` → [PR #1](https://github.com/himanshu2394i/Alpaca/pull/1) (open, mergeable)
+**Live HEAD (EC2):** `1a7d216` (merged PR #1) — Application URL http://35.175.208.115:8080
 
 ---
 
@@ -87,7 +87,7 @@ ingest → market.db ← run (tick every 60s)
 | **SSH key pair (AWS)** | `alpaca-agent-key` |
 | **SSH key (dev machine)** | `~/.ssh/alpaca-agent-key.pem` (reformatted PEM; temp copy at `%LOCALAPPDATA%\Temp\alpaca-agent-key-fixed.pem`) |
 | **App path** | `/opt/alpaca-options-agent` |
-| **Branch on VM** | `feat/hybrid-mtf-and-ops` |
+| **Branch on VM** | `master` @ `1a7d216` (PR #1 merged) |
 | **Secrets** | `/opt/alpaca-options-agent/.env` (copied from local `.env`; not in git) |
 
 **Systemd units:** `alpaca-ingest`, `alpaca-agent`, `alpaca-dashboard` — all **active** as of 2026-08-26.  
@@ -165,32 +165,34 @@ aws sts get-caller-identity   # expect Account 623210504780
 
 ### Now → 2026-08-28 (test on throwaway paper account)
 
-- [ ] Monitor during RTH (9:30–16:00 ET) — dashboard + `journalctl -u alpaca-agent -f`
-- [ ] Confirm screener fires sensibly; tune via `tools/replay` only if needed
-- [x] Commit + push deploy/safety fixes; update PR #1; `git pull` on VM
-- [ ] Save SSH key permanently under `~/.ssh/`; restrict SG to your IP if possible
+- [x] Merge PR #1 into `master`; EC2 on merged HEAD
+- [x] Fill-only entry logging + ghost-reconcile harden + ops health scripts
+- [x] Submission pack: one-pager, checklist, social drafts, demo outline (`docs/submission/`)
+- [x] Judge-facing `ops/cli_demo.sh` (Alpaca CLI)
+- [ ] Optional: attend kickoff / Discord Q&A
 - [ ] Verify Alpaca paper options approval level (L2+ for long calls/puts)
 - [ ] Rotate AWS access keys if they were ever pasted in chat
-- [ ] Merge PR #1 into `master` when RTH check looks healthy
+- [ ] Save SSH key permanently under `~/.ssh/`
 
 ### 2026-08-28 kickoff
 
 - [ ] Create **fresh competition paper account** ($100k)
-- [ ] Update VM `.env` with new keys
-- [ ] Consider fresh `data/market.db` or wipe positions table
+- [ ] Update VM `.env` with new keys; restart services; confirm equity ≈ 100000
+- [ ] Consider fresh `data/market.db` or wipe positions / decisions for clean audit
+- [ ] First Build-in-Public post (`docs/submission/SOCIAL_DRAFTS.md`)
 - [ ] **Freeze strategy logic** after this date
 
 ### 2026-08-29 – 30
 
-- [ ] One-page write-up (AI logic, risk gates, infra)
-- [ ] Cover image, slides, demo video
+- [x] One-page write-up draft (`docs/submission/ONE_PAGER.md`) — export PDF for submit
+- [ ] Cover image, slides, demo video (`docs/submission/DEMO_OUTLINE.md`)
 - [ ] Parameter tuning only — no logic changes
 
 ### 2026-08-31 – 2026-09-04
 
 - [ ] Competition account live
 - [ ] Monitor; flatten by Sep 4 close
-- [ ] Submit Devpost (repo, Application URL, video, paper account ID)
+- [ ] Submit on lablab (repo, Application URL, video, paper account ID, ≤5 social links)
 
 ### Backlog (optional)
 
@@ -211,7 +213,8 @@ aws sts get-caller-identity   # expect Account 623210504780
 | `agent/config.py` | Universe, DB path, env loading |
 | `deploy/systemd/` | Production units |
 | `deploy/user-data.sh` | EC2 bootstrap |
-| `ops/` | EOD snapshot, health, flatten |
+| `ops/` | EOD snapshot, health, flatten, CLI demo, live health |
+| `docs/submission/` | One-pager, checklist, social drafts, demo outline |
 | `docs/superpowers/specs/2026-08-23-alpaca-options-agent-design.md` | Original design |
 | `pm.md` | This project memory file |
 
