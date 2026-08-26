@@ -31,17 +31,27 @@ def _to_row(symbol: str, bar) -> tuple:
     )
 
 
-def warm_start(conn, symbols: list[str], days: int = 12) -> int:
+WARM_START_DAYS = 25
+"""Calendar days of 1-minute history to backfill at boot.
+
+Sized off the *slowest* consumer, not the fastest. rvol(lookback_days=5) needs
+~12 calendar days, but indicators.mtf_confirm() needs 200 15-minute bars for the
+EMA200 - roughly 8 sessions - and it FAILS OPEN when short, silently dropping
+the 4H/15m confirmation instead of blocking the trade. 25 calendar days is ~18
+sessions, about 2x margin, so a symbol added to UNIVERSE is filtered on its
+first day rather than trading unconfirmed.
+"""
+
+
+def warm_start(conn, symbols: list[str], days: int = WARM_START_DAYS) -> int:
     """Backfill recent 1-minute bars so indicators are live immediately.
 
     One multi-symbol request, not one per symbol: the free tier allows 200 REST
     calls per minute and there is no reason to spend 20 of them. The 15-minute
     REST delay does not matter here because this is history, not a live price.
 
-    `days` is CALENDAR days, not sessions. 12 calendar days guarantees at least
-    6 trading sessions across a weekend and a public holiday, which is what
-    indicators.rvol(lookback_days=5) needs: five prior sessions plus today.
-    Asking for 5 here yields 3-4 sessions and rvol silently degrades.
+    `days` is CALENDAR days, not sessions. See WARM_START_DAYS for why the
+    default is sized off the MTF filter rather than off rvol.
     """
     key, secret = config.api_keys()
     client = StockHistoricalDataClient(key, secret)
@@ -188,6 +198,15 @@ def _stream_once(conn) -> None:
         if counter["n"] % HEARTBEAT_EVERY == 0:
             log.info("streaming: %d bars received, latest %s %s",
                      counter["n"], bar.symbol, bar.timestamp)
+
+    if len(config.UNIVERSE) > config.MAX_WS_SYMBOLS:
+        # Alpaca rejects the whole subscription past the plan cap rather than
+        # trimming it, so an oversized UNIVERSE means no bars at all. Fail here,
+        # loudly, instead of discovering it as a staleness halt mid-session.
+        raise ValueError(
+            f"UNIVERSE has {len(config.UNIVERSE)} symbols, "
+            f"cap is {config.MAX_WS_SYMBOLS}"
+        )
 
     stream.subscribe_bars(on_bar, *config.UNIVERSE)
     log.info("streaming %d symbols from IEX", len(config.UNIVERSE))

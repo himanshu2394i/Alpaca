@@ -87,3 +87,28 @@ def test_fill_gap_uses_lookback_when_store_is_empty(conn):
     assert ingest.fill_gap(conn, ["SPY"], client=FakeClient(), now=now,
                            lookback_minutes=10) == 0
     assert captured["start"].replace(tzinfo=timezone.utc) == now - timedelta(minutes=10)
+
+
+def test_universe_fits_the_free_tier_websocket_cap():
+    # Alpaca's Basic plan caps unique streamed symbols. Exceeding it does not
+    # degrade gracefully - the subscription is rejected and ingest goes dark.
+    from agent import config
+
+    assert len(config.UNIVERSE) <= config.MAX_WS_SYMBOLS
+    assert len(set(config.UNIVERSE)) == len(config.UNIVERSE), "duplicate symbols"
+
+
+def test_warm_start_backfills_enough_history_to_arm_the_mtf_filter():
+    # mtf_confirm() fails OPEN when it lacks history, so too short a backfill
+    # silently drops the 4H/15m confirmation instead of blocking the trade.
+    from agent.indicators import MTF
+
+    sessions = ingest.WARM_START_DAYS * 5 / 7          # calendar days -> sessions
+    bars_15m = sessions * 26                            # 6.5h RTH / 15min
+    bars_4h = sessions * 2
+
+    assert bars_15m >= MTF["min_15m_bars"] * 1.5, (
+        f"{ingest.WARM_START_DAYS}d yields ~{bars_15m:.0f} 15m bars, "
+        f"need {MTF['min_15m_bars']} with margin"
+    )
+    assert bars_4h >= MTF["min_4h_bars"] * 1.5
