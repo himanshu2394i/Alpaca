@@ -34,7 +34,7 @@ ingest → market.db ← run (tick every 60s)
          dashboard
 ```
 
-**Universe (20 underlyings):** SPY, QQQ, IWM, DIA, AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD, NFLX, AVGO, MU, JPM, XLF, XLE, COIN, SMCI — capped at 30 websocket symbols (10 slots reserved for held options).
+**Universe (30 underlyings):** SPY, QQQ, IWM, DIA, AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD, NFLX, AVGO, MU, JPM, XLF, XLE, COIN, SMCI, PLTR, MSTR, HOOD, ARM, APP, CVNA, NET, RDDT, SHOP, SOXL — at the 30-symbol websocket cap. The last 10 are high-beta names added 2026-08-26; median 30d ADR 5.2% vs 2.5% for the original 20. No slots remain for streaming held options.
 
 ---
 
@@ -229,6 +229,8 @@ aws sts get-caller-identity   # expect Account REDACTED-AWS-ACCOUNT-ID
 | 2026-08-26 | Relaunch EC2 with `alpaca-agent-key` after original `algotrading.pem` unavailable locally |
 | 2026-08-26 | Halt new entries when bars are >5 min stale during RTH; exits stay live |
 | 2026-08-26 | On stream exit, REST gap-fill then reconnect ingest |
+| 2026-08-26 | Widen universe 20 -> 30 with high-beta names; consumes the reserved option slots |
+| 2026-08-26 | Warm start 12 -> 25 calendar days, sized off MTF's 200x15m bars (it fails open when short) |
 
 ---
 
