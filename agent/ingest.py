@@ -104,25 +104,60 @@ def fill_gap(
     return written
 
 
+RECONNECT_BASE_DELAY = 5.0
+RECONNECT_MAX_DELAY = 120.0
+# A stream must survive at least this long to count as "it actually
+# connected" rather than "failed immediately" - see _backoff_delay.
+RECONNECT_RESET_AFTER = 60.0
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Seconds to wait before reconnect attempt `attempt` (1-indexed).
+
+    Live: a flat 5s retry against Alpaca's "connection limit exceeded"
+    hammered the API every ~20-30s for over an hour straight without ever
+    recovering, because the server needs longer than 5s to release a stale
+    connection slot for the same API key - every retry landed while the
+    prior one was still being counted, a self-sustaining lockout rather
+    than a transient failure. Exponential backoff, capped, gives the server
+    room to actually clear the slot.
+    """
+    return min(RECONNECT_MAX_DELAY, RECONNECT_BASE_DELAY * (2 ** attempt))
+
+
 def run(conn) -> None:
     """Subscribe to 1-minute bars for the universe and write each to SQLite.
 
     Blocks until interrupted. On stream exit (timeout / disconnect that
     escapes alpaca-py's internal reconnect), REST-fill any gap and restart.
     """
+    import time
+
+    attempt = 0
     while True:
+        started = time.monotonic()
         try:
             _stream_once(conn)
         except KeyboardInterrupt:
             raise
         except Exception:
             log.exception("stream stopped; filling gap before reconnect")
+
         try:
             fill_gap(conn, config.UNIVERSE)
         except Exception:
             log.exception("gap fill failed")
-        import time
-        time.sleep(5)
+
+        # A stream that ran a while before failing was a real, working
+        # connection - a later, unrelated failure should not inherit a
+        # backoff built up from an earlier connection-limit lockout.
+        if time.monotonic() - started > RECONNECT_RESET_AFTER:
+            attempt = 0
+        attempt += 1
+
+        delay = _backoff_delay(attempt)
+        log.warning("reconnecting in %.0fs (attempt %d)", delay, attempt)
+        time.sleep(delay)
 
 
 def _stream_once(conn) -> None:
