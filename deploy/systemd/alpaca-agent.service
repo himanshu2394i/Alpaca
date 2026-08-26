@@ -1,0 +1,18 @@
+[Unit]
+Description=Alpaca options agent — trading loop
+After=network-online.target alpaca-ingest.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/alpaca-options-agent
+EnvironmentFile=/opt/alpaca-options-agent/.env
+Environment=PATH=/opt/alpaca-options-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/alpaca-options-agent/.venv/bin/python -m agent.run --live --interval 60
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
