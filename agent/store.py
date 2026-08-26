@@ -117,6 +117,12 @@ def last_bar_ts(conn: sqlite3.Connection, symbol: str) -> str | None:
     return cur.fetchone()["ts"]
 
 
+def newest_bar_ts(conn: sqlite3.Connection) -> str | None:
+    """Most recent bar timestamp across the whole store, for feed health checks."""
+    cur = conn.execute("SELECT MAX(ts_utc) AS ts FROM bars")
+    return cur.fetchone()["ts"]
+
+
 def open_position(
     conn: sqlite3.Connection, symbol: str, underlying: str, right: str, qty: int,
     entry_price: float, entry_ts: str, entry_underlying: float,

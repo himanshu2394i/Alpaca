@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from agent import ingest
 
 
-def test_run_sets_a_data_timeout_so_a_dead_socket_gets_noticed():
+def test_stream_once_sets_a_data_timeout_so_a_dead_socket_gets_noticed():
     # Live: without this, a "connected but mute" socket produced zero bars
     # for ~19 hours across an entire trading session with no error raised,
     # because alpaca-py's ping/pong keepalive does not catch this failure
@@ -16,7 +16,7 @@ def test_run_sets_a_data_timeout_so_a_dead_socket_gets_noticed():
         mock_stream = MagicMock()
         mock_stream_cls.return_value = mock_stream
 
-        ingest.run(conn=MagicMock())
+        ingest._stream_once(conn=MagicMock())
 
         _, kwargs = mock_stream_cls.call_args
         assert kwargs.get("data_timeout") is not None

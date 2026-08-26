@@ -60,16 +60,72 @@ def warm_start(conn, symbols: list[str], days: int = 12) -> int:
     return written
 
 
+def fill_gap(
+    conn,
+    symbols: list[str],
+    *,
+    client=None,
+    now: datetime | None = None,
+    lookback_minutes: int = 30,
+) -> int:
+    """REST-backfill recent bars to close holes left by a websocket reconnect.
+
+    Starts from the newest stored bar (minus one minute of overlap) or from
+    `lookback_minutes` ago when the store is empty. Safe to call repeatedly:
+    upserts are idempotent.
+    """
+    now = now or datetime.now(timezone.utc)
+    newest = store.newest_bar_ts(conn)
+    if newest:
+        start = datetime.strptime(newest, TS_FMT).replace(tzinfo=timezone.utc)
+        start = start - timedelta(minutes=1)
+    else:
+        start = now - timedelta(minutes=lookback_minutes)
+
+    if start >= now:
+        return 0
+
+    if client is None:
+        key, secret = config.api_keys()
+        client = StockHistoricalDataClient(key, secret)
+
+    request = StockBarsRequest(
+        symbol_or_symbols=list(symbols),
+        timeframe=TimeFrame.Minute,
+        start=start,
+        end=now,
+        feed=DataFeed.IEX,
+    )
+    barset = client.get_stock_bars(request)
+    rows = [_to_row(sym, bar) for sym, series in barset.data.items() for bar in series]
+    written = store.upsert_bars(conn, rows)
+    if written:
+        log.info("gap fill: %d bars since %s", written, start.strftime(TS_FMT))
+    return written
+
+
 def run(conn) -> None:
     """Subscribe to 1-minute bars for the universe and write each to SQLite.
 
-    Blocks until interrupted. alpaca-py's own run() owns the event loop and
-    already reconnects with backoff, so we do not write a retry loop here.
-
-    # ponytail: an in-process reconnect leaves a gap in `bars`; only a process
-    # restart backfills it via warm_start. Add a periodic gap-filler if the
-    # screener starts tripping over holes.
+    Blocks until interrupted. On stream exit (timeout / disconnect that
+    escapes alpaca-py's internal reconnect), REST-fill any gap and restart.
     """
+    while True:
+        try:
+            _stream_once(conn)
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            log.exception("stream stopped; filling gap before reconnect")
+        try:
+            fill_gap(conn, config.UNIVERSE)
+        except Exception:
+            log.exception("gap fill failed")
+        import time
+        time.sleep(5)
+
+
+def _stream_once(conn) -> None:
     key, secret = config.api_keys()
     # data_timeout is None by default, which disables alpaca-py's only defence
     # against a "connected but mute" socket - a connection that stays

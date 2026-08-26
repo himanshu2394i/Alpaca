@@ -66,6 +66,8 @@ async def tick(
         halt_reason = f"{halt_file} present"
     else:
         halt_reason = gates.halt_reason(equity, day_start, peak)
+        if halt_reason is None:
+            halt_reason = gates.data_stale_reason(store.newest_bar_ts(conn), now_utc)
 
     # --- exits first, and regardless of any halt --------------------------
     exit_signals = exits.scan(conn, underlyings, premiums, today)

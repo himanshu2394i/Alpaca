@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/alpaca-options-agent
 EnvironmentFile=/opt/alpaca-options-agent/.env
+Environment=PATH=/opt/alpaca-options-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/opt/alpaca-options-agent/.venv/bin/python -m agent.ingest
 Restart=always
 RestartSec=10

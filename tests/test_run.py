@@ -16,6 +16,11 @@ BASE = dict(underlying="SPY", right="call", qty=7, entry_price=2.00,
             target_underlying=775.0, expiry="2026-09-11")
 
 
+def seed_fresh_bars(conn, ts_utc=NOW):
+    """Give the tick a live-looking tape so the RTH staleness gate does not trip."""
+    store.upsert_bars(conn, [("SPY", ts_utc, 765.0, 766.0, 764.0, 765.0, 1000)])
+
+
 class FakeBroker:
     """Stands in for the MCP session; records what the tick tried to do."""
 
@@ -75,11 +80,28 @@ async def test_entries_are_blocked_while_halted(conn, tmp_path):
 
 
 async def test_a_clean_tick_is_not_halted(conn, tmp_path):
+    seed_fresh_bars(conn)
     result = await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
                             underlyings={}, equity=100_000, day_start=100_000,
                             peak=100_000, halt_file=tmp_path / "HALT")
     assert not result["halted"]
     assert result["halt_reason"] is None
+
+
+async def test_stale_bars_halt_entries_but_exits_still_fire(conn, tmp_path):
+    open_a_losing_position(conn)
+    # Stale RTH bar: 14:05 now, last bar at 13:55 → 10 minutes old.
+    store.upsert_bars(conn, [("SPY", "2026-08-26T13:55:00Z",
+                              750.0, 751.0, 749.0, 750.0, 1000)])
+
+    result = await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
+                            underlyings={"SPY": 750.0}, equity=100_000,
+                            day_start=100_000, peak=100_000,
+                            halt_file=tmp_path / "HALT")
+
+    assert result["halted"] and "stale" in result["halt_reason"]
+    assert len(result["exits"]) == 1
+    assert result["entries"] == []
 
 
 async def test_exit_signals_are_submitted_as_sell_orders(conn, tmp_path):
@@ -199,6 +221,7 @@ class FakeDecideClient:
 
 
 async def test_tick_enters_via_decide_when_a_client_is_given(conn, tmp_path, monkeypatch):
+    seed_fresh_bars(conn)
     monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
     broker = FakeBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
     client = FakeDecideClient(action="enter", symbol=OPTION_SYMBOL, thesis="strong setup")
@@ -217,6 +240,7 @@ async def test_tick_enters_via_decide_when_a_client_is_given(conn, tmp_path, mon
 
 
 async def test_tick_records_a_skip_from_decide_and_places_no_order(conn, tmp_path, monkeypatch):
+    seed_fresh_bars(conn)
     monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
     broker = FakeBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
     client = FakeDecideClient(action="skip", thesis="not convinced")
@@ -233,6 +257,7 @@ async def test_tick_records_a_skip_from_decide_and_places_no_order(conn, tmp_pat
 
 
 async def test_tick_falls_back_to_pick_contract_without_a_decide_client(conn, tmp_path, monkeypatch):
+    seed_fresh_bars(conn)
     monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
     broker = FakeBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
 
@@ -250,6 +275,7 @@ async def test_tick_still_respects_gates_when_decide_says_enter(conn, tmp_path, 
     # so it cannot choose an illiquid one - approve() re-checks viability too,
     # covering that case. What it can still catch is a contract sizing to zero
     # (too expensive for the position budget), which viable() does not check.
+    seed_fresh_bars(conn)
     monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
     expensive = {OPTION_SYMBOL: option_snap(bid=24.50, ask=25.00)}
     broker = FakeBroker(chain={"snapshots": expensive})
