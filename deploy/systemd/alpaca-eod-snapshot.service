@@ -4,6 +4,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+User=ubuntu
+Group=ubuntu
 WorkingDirectory=/opt/alpaca-options-agent
 EnvironmentFile=/opt/alpaca-options-agent/.env
 Environment=PATH=/opt/alpaca-options-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin

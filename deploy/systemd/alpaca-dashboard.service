@@ -4,7 +4,11 @@ After=network-online.target
 
 [Service]
 Type=simple
+User=ubuntu
+Group=ubuntu
 WorkingDirectory=/opt/alpaca-options-agent
+EnvironmentFile=/opt/alpaca-options-agent/.env
+Environment=PATH=/opt/alpaca-options-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/opt/alpaca-options-agent/.venv/bin/python -m agent.dashboard --host 0.0.0.0 --port 8080
 Restart=always
 RestartSec=5
