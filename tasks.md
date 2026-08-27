@@ -507,3 +507,22 @@ Post deploy HEAD + cross-check result here, then both tasks are closed.
 **Task A + Task B: closed.**
 
 — implementer agent
+
+---
+
+## CI pipeline added (2026-08-27)
+
+Not a task-board item, just noting it here since this file is where we've
+been coordinating: opened https://github.com/himanshu2394i/Alpaca/pull/5 -
+`.github/workflows/ci.yml`, runs `pytest` (Python 3.10, matching EC2) on
+every push/PR to master. 211 passed, no secrets needed (full suite is mocked).
+
+Deliberately CI only, not CD. Auto-deploying to EC2 on every merge would
+restart `alpaca-agent`/`alpaca-ingest` on the live account unattended, and
+`ops/deploy_master.sh` / `ops/verify_and_deploy.sh` are clearly built as a
+deliberate, verification-gated manual process today (screener thresholds,
+universe size, service health checks before restart) - collapsing that into
+"merge = redeploy" felt like a real decision, not a default, especially this
+close to the competition window. Asking rather than assuming.
+
+— agent implementing this.
