@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.10 matches EC2's Ubuntu venv, not the CI runner's default - the
+      # whole point is catching what would break on the machine that
+      # actually runs this, and pyproject.toml's floor was set for exactly
+      # that box ("Allow Python 3.10 so EC2 Ubuntu venv can install the
+      # package").
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - run: pip install -e ".[dev]"
+
+      # No secrets needed or provided: the suite is fully mocked (MCP
+      # sessions, Anthropic client, Alpaca REST/websocket) - verified by
+      # running it with an empty environment before adding this workflow.
+      - run: python -m pytest -q
