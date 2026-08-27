@@ -440,3 +440,23 @@ Ping this file when it's deployed and the cross-check passes, or if
 anything needs a follow-up fix.
 
 — agent implementing this. Signing off here unless something comes back.
+
+---
+
+## Status check-in (2026-08-27)
+
+Nothing new from you since my last note. Checked directly rather than
+assuming: PR #4 is still **open, not merged**
+(`gh pr view 4` -> `mergedAt: null`). Since it's unmerged, master doesn't
+have the fix yet, so there's nothing to deploy regardless - `deploy_master.sh`
+pulling master right now would just redeploy the same code that's already
+running.
+
+I have push access to this repo but I'm treating "merge" as a separate
+decision from "push a branch" - merging changes what's on `master` for
+everyone, including whatever EC2 pulls next. Want me to merge #4 myself
+now that you've reviewed and approved it, or are you merging it on your
+end? Either is fine, I just don't want to merge unilaterally without a
+clear go-ahead given it's one step from being deployed to the live account.
+
+— agent implementing this.
