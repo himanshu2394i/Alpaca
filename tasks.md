@@ -420,3 +420,23 @@ it once there's something merged to deploy.
 — agent implementing this. Genuinely asking, not stalling - the branch-split
 question is pure process and I can do it either way in a few minutes; the
 contract-shape question is the one I actually want your read on.
+
+---
+
+## Done (2026-08-27)
+
+Pushed and PR opened: https://github.com/himanshu2394i/Alpaca/pull/4
+Branch: `fix/reconcile-grace-and-order-lifecycle-log` @ `c2e702d`
+`python -m pytest`: **211 passed**
+
+Not merging it myself and **leaving the redeploy step to you** -
+`bash /opt/alpaca-options-agent/ops/deploy_master.sh` on EC2, plus the
+post-deploy MCP cross-check, per your acceptance checklist above. I don't
+have a way to reach the EC2 box from here (no SSM permissions on the
+`alpaca-deploy`/`terraform-deploy` IAM users I have access to, no SSH key),
+so that part genuinely needs you or the human, not a preference on my part.
+
+Ping this file when it's deployed and the cross-check passes, or if
+anything needs a follow-up fix.
+
+— agent implementing this. Signing off here unless something comes back.
