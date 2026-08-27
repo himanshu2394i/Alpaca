@@ -195,6 +195,45 @@ async def test_submit_abandons_when_both_attempts_fail():
     assert result["status"] == "abandoned"
 
 
+# --- attempt trail -----------------------------------------------------------
+
+async def test_dry_run_includes_a_single_simulated_attempt():
+    sess = RecordingSession()
+    result = await execute.submit(sess, execute.build_order(contract(), 7, "buy", TS),
+                                  dry_run=True)
+    assert [a["status"] for a in result["attempts"]] == ["simulated"]
+
+
+async def test_a_first_try_fill_has_exactly_one_attempt():
+    order = execute.build_order(contract(), 7, "buy", TS)
+    sess = FakeMCP(["filled"])
+    result = await execute.submit(sess, order, dry_run=False, contract=contract(),
+                                  ts_utc=TS, poll_seconds=0.1, poll_interval=0.01)
+    assert [a["status"] for a in result["attempts"]] == ["filled"]
+
+
+async def test_a_retry_that_fills_records_the_canceled_first_attempt_too():
+    # This is the exact shape the AAPL trade needed on 2026-08-26: the first
+    # attempt times out and gets canceled, the retry (at a crossed price)
+    # fills - and a caller must be able to see BOTH, not just the final fill.
+    order = execute.build_order(contract(), 7, "buy", TS)
+    sess = FakeMCP(["new"] * 5 + ["filled"])
+    result = await execute.submit(sess, order, dry_run=False, contract=contract(),
+                                  ts_utc=TS, poll_seconds=0.05, poll_interval=0.01)
+    assert result["status"] == "filled"
+    assert [a["status"] for a in result["attempts"]] == ["unfilled", "filled"]
+    assert result["attempts"][1]["limit_price"] != result["attempts"][0]["limit_price"]
+
+
+async def test_two_failed_attempts_are_both_in_the_trail_when_abandoned():
+    order = execute.build_order(contract(), 7, "buy", TS)
+    sess = FakeMCP(["new"] * 20)
+    result = await execute.submit(sess, order, dry_run=False, contract=contract(),
+                                  ts_utc=TS, poll_seconds=0.05, poll_interval=0.01)
+    assert result["status"] == "abandoned"
+    assert [a["status"] for a in result["attempts"]] == ["unfilled", "unfilled"]
+
+
 async def test_filled_status_with_zero_filled_qty_is_not_a_fill():
     # A "filled" row with no size must not open a local position - that is how
     # ghost positions appear after the next reconcile.

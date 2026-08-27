@@ -25,9 +25,12 @@ class FakeSession:
 
 @pytest.mark.asyncio
 async def test_reconcile_closes_a_local_position_missing_at_the_broker(conn):
+    # entry_ts is well outside GHOST_CLOSE_GRACE_MINUTES so this exercises the
+    # true-orphan path, not the grace window (see test_reconcile_grants_a_
+    # grace_window_for_a_very_recent_entry for that case).
     store.open_position(
         conn, symbol=SYM, underlying="SPY", right="call", qty=2,
-        entry_price=2.0, entry_ts=NOW, entry_underlying=765.0,
+        entry_price=2.0, entry_ts="2026-08-26T13:00:00Z", entry_underlying=765.0,
         stop_underlying=760.0, target_underlying=775.0, expiry="2026-09-04",
     )
     sess = FakeSession([])
@@ -36,6 +39,71 @@ async def test_reconcile_closes_a_local_position_missing_at_the_broker(conn):
 
     assert store.open_positions(conn) == []
     assert any("ghost" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_grants_a_grace_window_for_a_very_recent_entry(conn):
+    # Live: MSFT filled at 18:26:46 and reconcile ran 44s later and still
+    # ghost-closed it - the broker's position snapshot can lag a genuine fill.
+    now = "2026-08-26T14:00:30Z"
+    entry_ts = "2026-08-26T14:00:00Z"   # 30 seconds before `now`
+    store.open_position(
+        conn, symbol=SYM, underlying="SPY", right="call", qty=2,
+        entry_price=2.0, entry_ts=entry_ts, entry_underlying=765.0,
+        stop_underlying=760.0, target_underlying=775.0, expiry="2026-09-04",
+    )
+
+    notes = await reconcile.reconcile(conn, FakeSession([]), now)
+
+    assert len(store.open_positions(conn)) == 1
+    assert any("deferred" in n.lower() for n in notes)
+
+
+async def test_reconcile_grace_window_expires(conn):
+    # Same fixture shape as the grace-window test above, but `now` is past
+    # GHOST_CLOSE_GRACE_MINUTES - proves the window is temporary protection,
+    # not a permanent exemption for any position that happens to be recent.
+    entry_ts = "2026-08-26T14:00:00Z"
+    now = "2026-08-26T14:04:00Z"   # 4 minutes later, past the 3-minute grace
+    assert 4 > reconcile.GHOST_CLOSE_GRACE_MINUTES
+    store.open_position(
+        conn, symbol=SYM, underlying="SPY", right="call", qty=2,
+        entry_price=2.0, entry_ts=entry_ts, entry_underlying=765.0,
+        stop_underlying=760.0, target_underlying=775.0, expiry="2026-09-04",
+    )
+
+    notes = await reconcile.reconcile(conn, FakeSession([]), now)
+
+    assert store.open_positions(conn) == []
+    assert any("ghost" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_close_a_position_present_in_the_result_shape(conn):
+    # Regression, at the reconcile() level rather than just the parser unit:
+    # a position genuinely present in the live "result" shape must never be
+    # closed as a ghost, independent of the grace window (entry is 4h old).
+    store.open_position(
+        conn, symbol="MSFT260918C00500000", underlying="MSFT", right="call",
+        qty=1, entry_price=10.20, entry_ts="2026-08-26T10:00:00Z",
+        entry_underlying=500.0, stop_underlying=490.0, target_underlying=520.0,
+        expiry="2026-09-18",
+    )
+
+    class ResultSession(FakeSession):
+        async def call_tool(self, name, args):
+            import json
+            self.calls.append((name, args))
+            data = {"result": [{"symbol": "MSFT260918C00500000", "qty": "1",
+                                "avg_entry_price": "10.2"}]}
+            return type("R", (), {"content": [type("C", (), {
+                "text": json.dumps(data)})()]})()
+
+    notes = await reconcile.reconcile(conn, ResultSession([]), "2026-08-26T14:00:00Z")
+
+    open_now = store.open_positions(conn)
+    assert len(open_now) == 1 and open_now[0]["symbol"] == "MSFT260918C00500000"
+    assert not any("ghost" in n for n in notes)
 
 
 @pytest.mark.asyncio
