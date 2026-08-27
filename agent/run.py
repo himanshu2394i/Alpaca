@@ -20,6 +20,41 @@ DELTA_TARGET = 0.45          # middle of the gates' 0.35-0.55 band
 CHAIN_STRIKE_WINDOW = 0.10   # fetch strikes within +/-10% of spot
 
 
+def _log_attempts(conn, now_utc: str, symbol: str, result: dict) -> None:
+    """Record every non-final order attempt in the decision log.
+
+    Live: the AAPL order the night of 2026-08-26 canceled once and retried
+    once, and none of that was visible on the dashboard afterward - only the
+    original entry intent line, with the actual outcome only recoverable by
+    cross-referencing the broker's own order history directly. A "filled"
+    attempt is not logged here since the caller already logs "entry"/the exit
+    close for that case; this only fills in the intermediate steps.
+
+    Offsets each row's timestamp by one second per attempt: `decisions`'
+    primary key is (ts_utc, symbol, action), and two failed attempts for the
+    same symbol in the same tick both being "canceled" would otherwise share
+    a key and silently overwrite each other via INSERT OR REPLACE - exactly
+    the kind of quiet data loss this whole task exists to eliminate.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    base = datetime.strptime(now_utc, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    logged = 0
+    for attempt in result.get("attempts", []):
+        status = attempt.get("status")
+        if status == "unfilled":
+            action, verb = "canceled", "unfilled, canceled"
+        elif status == "rejected":
+            action, verb = "broker_rejected", "rejected by broker"
+        else:
+            continue
+        ts = (base + timedelta(seconds=logged)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        store.record_decision(
+            conn, ts, symbol, action,
+            f"{attempt['client_order_id']} @ {attempt['limit_price']} {verb}")
+        logged += 1
+
+
 def pick_contract(contracts, today: str, risk: dict = gates.RISK):
     """Choose the most standard viable contract: closest to mid-band delta.
 
@@ -80,12 +115,19 @@ async def tick(
         store.record_decision(conn, now_utc, signal.symbol, "exit", signal.reason)
         result = await broker.place(order, dry_run=dry_run, contract=contract,
                                   ts_utc=now_utc)
+        if not dry_run:
+            _log_attempts(conn, now_utc, signal.symbol, result)
         if not dry_run and result.get("status") == "filled":
             px = result.get("fill_price", contract.mid)
             store.close_position(conn, signal.symbol,
                                  exit_price=px, exit_ts=now_utc,
                                  exit_reason=signal.reason)
         elif not dry_run and result.get("status") != "filled":
+            # Failing to close a position costs money, unlike failing to open
+            # one - this must land in the decision log, not only a python
+            # warning nobody reading the dashboard will ever see.
+            store.record_decision(conn, now_utc, signal.symbol, "exit_failed",
+                                  f"status={result.get('status')}", signal.reason)
             log.warning("exit not filled for %s: %s", signal.symbol,
                         result.get("status"))
 
@@ -147,6 +189,10 @@ async def tick(
         order = execute.build_order(contract, qty, "buy", now_utc)
         result = await broker.place(order, dry_run=dry_run, contract=contract,
                                     ts_utc=now_utc)
+        if not dry_run:
+            # Unconditional: a fill-on-retry still has a canceled first
+            # attempt worth recording, not only the eventual "entry" row.
+            _log_attempts(conn, now_utc, contract.symbol, result)
         status = result.get("status")
         detail = (f"{qty}x @ {contract.ask:.2f}, delta {contract.delta:.2f}")
 

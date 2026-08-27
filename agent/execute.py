@@ -139,28 +139,52 @@ async def _attempt(sess, order: dict, contract: Contract, poll_seconds: float,
     return {"dry_run": False, "status": "unfilled", "order": order}
 
 
+def _attempt_summary(order: dict, outcome: dict) -> dict:
+    """One entry of the `attempts` trail: what was tried and how it ended.
+
+    Live: the AAPL retry the night of 2026-08-26 canceled once and retried
+    once, and the decision log showed only the original entry intent - none
+    of the cancel/retry lifecycle was recorded anywhere the dashboard could
+    show it. This is what lets the caller log each attempt, not just the
+    final outcome.
+    """
+    return {"client_order_id": order["client_order_id"],
+           "limit_price": order["limit_price"], "status": outcome["status"]}
+
+
 async def submit(sess, order: dict, dry_run: bool = True,
                  contract: Contract | None = None, ts_utc: str | None = None,
                  poll_seconds: float = POLL_SECONDS,
                  poll_interval: float = POLL_INTERVAL) -> dict:
-    """Place an order, poll for a fill, cancel and retry once if needed."""
+    """Place an order, poll for a fill, cancel and retry once if needed.
+
+    The returned dict always carries `attempts`: one entry per order actually
+    placed, in order, so a caller can log the full lifecycle (canceled,
+    retried, filled, rejected) rather than only the terminal status.
+    """
     if dry_run:
         log.info("DRY RUN would place: %s", order)
-        return {"dry_run": True, "status": "simulated", "order": order}
+        return {"dry_run": True, "status": "simulated", "order": order,
+                "attempts": [{"client_order_id": order["client_order_id"],
+                             "limit_price": order["limit_price"],
+                             "status": "simulated"}]}
 
     if contract is None or ts_utc is None:
         raise ValueError("contract and ts_utc are required for live submission")
 
     first = await _attempt(sess, order, contract, poll_seconds, poll_interval)
+    attempts = [_attempt_summary(order, first)]
     if first["status"] in ("filled", "rejected"):
-        return first
+        return {**first, "attempts": attempts}
 
     retry_order = build_order(contract, int(order["qty"]), order["side"],
                               ts_utc, retry=True)
     second = await _attempt(sess, retry_order, contract, poll_seconds,
                             poll_interval)
+    attempts.append(_attempt_summary(retry_order, second))
     if second["status"] == "filled":
-        return second
+        return {**second, "attempts": attempts}
 
     log.warning("order abandoned: %s", order["symbol"])
-    return {"dry_run": False, "status": "abandoned", "order": order}
+    return {"dry_run": False, "status": "abandoned", "order": order,
+           "attempts": attempts}
