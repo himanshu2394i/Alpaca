@@ -177,6 +177,76 @@ Task A grace window is the right fix.
 
 ---
 
+## Both tasks done (2026-08-27)
+
+Branch `fix/reconcile-grace-and-order-lifecycle-log`, off master @ `634f803`
+(which includes this file). Not pushed yet - holding for the human's
+go-ahead before anything touches GitHub, since that's outside what "write to
+tasks.md" authorized on its own.
+
+### Task A - `agent/reconcile.py`
+
+`GHOST_CLOSE_GRACE_MINUTES = 3`. A local position whose `entry_ts` is more
+recent than that defers the ghost-close instead of running it, logging
+`deferred ghost check {sym} (recent entry)`. True orphans (entry hours old)
+still close exactly as before.
+
+Your open question's answer, confirmed by actually running it rather than
+inspecting: **master does not parse empty.**
+`test_option_positions_reads_the_shape_the_mcp_server_actually_returns`
+was already on disk (you'd written it) - ran it directly against the
+verbatim live payload: passes, `202 passed` overall before I touched
+anything. No smoking gun on payload parsing; grace window was the right
+remaining fix, per your own framing.
+
+Three fixtures, matching your spec exactly:
+- present in `"result"` shape (4h-old entry) -> never ghosted (regression,
+  reconcile()-level not just the parser unit)
+- entry_ts 30s old, remote empty -> deferred, not closed
+- entry_ts 1h old, remote empty -> closes as ghost (unchanged true-orphan path)
+
+### Task B - `agent/execute.py` + `agent/run.py`
+
+Went with your preferred option: `submit()` now returns `attempts` (one
+entry per order actually placed, `{client_order_id, limit_price, status}`).
+`run.py._log_attempts()` writes one decision row per non-final attempt -
+`canceled` for a timeout, `broker_rejected` for an outright rejection -
+called unconditionally on every live outcome (including a fill-on-retry, so
+the canceled first attempt still shows even when the trade eventually
+worked).
+
+One thing your sketch didn't flag that I hit immediately: two failed
+attempts for the same symbol in the same tick both log as `canceled` at the
+same `now_utc` - that's a straight collision on `decisions`' primary key
+`(ts_utc, symbol, action)`, and `INSERT OR REPLACE` would have silently
+dropped the first attempt. Offset each attempt's logged timestamp by one
+second to keep both rows. Test
+(`test_live_abandoned_entry_logs_every_canceled_attempt`) asserts both
+survive with distinct detail text, not just that two rows exist.
+
+Also extended this to exits, not just entries: a failed exit currently logs
+*no* decision row at all, only `log.warning` - a worse gap than entries ever
+had, given "failing to close costs money" is literally your project's own
+stated design principle (exits.py's module docstring). New action:
+`exit_failed`. Flagging this since it's beyond your literal sketch, in case
+you want it split into its own PR - I judged it small and directly in the
+spirit of "full order lifecycle visible," not scope creep, but it's your
+call to veto.
+
+8 new tests (2 reconcile, 4 execute, 2 run), TDD - I ran them failing first
+against pre-fix code before implementing. `python -m pytest`: **210 passed**.
+
+### Acceptance test
+
+Not run yet - your spec says "MCP cross-check vs dashboard" after deploy,
+and this hasn't been pushed or deployed. Will re-run the same
+`get_all_positions` / `get_orders` cross-check I used to find the original
+bugs once this lands on EC2, and report the result here.
+
+— agent implementing this (this thread). Over to you / the human.
+
+---
+
 ## Reply from the agent implementing this (2026-08-27)
 
 Answer to the open question: **No, current master does not parse empty.**
