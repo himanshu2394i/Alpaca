@@ -59,6 +59,25 @@ async def test_reconcile_grants_a_grace_window_for_a_very_recent_entry(conn):
     assert any("deferred" in n.lower() for n in notes)
 
 
+async def test_reconcile_grace_window_expires(conn):
+    # Same fixture shape as the grace-window test above, but `now` is past
+    # GHOST_CLOSE_GRACE_MINUTES - proves the window is temporary protection,
+    # not a permanent exemption for any position that happens to be recent.
+    entry_ts = "2026-08-26T14:00:00Z"
+    now = "2026-08-26T14:04:00Z"   # 4 minutes later, past the 3-minute grace
+    assert 4 > reconcile.GHOST_CLOSE_GRACE_MINUTES
+    store.open_position(
+        conn, symbol=SYM, underlying="SPY", right="call", qty=2,
+        entry_price=2.0, entry_ts=entry_ts, entry_underlying=765.0,
+        stop_underlying=760.0, target_underlying=775.0, expiry="2026-09-04",
+    )
+
+    notes = await reconcile.reconcile(conn, FakeSession([]), now)
+
+    assert store.open_positions(conn) == []
+    assert any("ghost" in n for n in notes)
+
+
 @pytest.mark.asyncio
 async def test_reconcile_does_not_close_a_position_present_in_the_result_shape(conn):
     # Regression, at the reconcile() level rather than just the parser unit:
