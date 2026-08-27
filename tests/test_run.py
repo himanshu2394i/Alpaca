@@ -334,6 +334,87 @@ async def test_live_unfilled_order_does_not_log_entry_or_open_a_position(
     assert any(d["action"] == "abandoned" for d in logged)
 
 
+class AbandonedWithAttemptsBroker(FakeBroker):
+    """Both order attempts time out and get canceled - matches what
+    execute.submit() actually returns when neither fill."""
+
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+        self.orders.append((order, dry_run))
+        if dry_run:
+            return {"dry_run": True, "status": "simulated", "order": order}
+        return {"dry_run": False, "status": "abandoned", "order": order,
+               "attempts": [
+                   {"client_order_id": order["client_order_id"],
+                    "limit_price": order["limit_price"], "status": "unfilled"},
+                   {"client_order_id": order["client_order_id"] + "-r",
+                    "limit_price": str(float(order["limit_price"]) + 0.01),
+                    "status": "unfilled"},
+               ]}
+
+
+class FilledOnRetryBroker(FakeBroker):
+    """One call to place() - the retry happens inside execute.submit() itself,
+    invisible to run.py - returning the shape submit() actually returns when
+    the first attempt times out and the retry fills."""
+
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+        self.orders.append((order, dry_run))
+        if dry_run:
+            return {"dry_run": True, "status": "simulated", "order": order}
+        return {"dry_run": False, "status": "filled",
+               "fill_price": float(order["limit_price"]),
+               "attempts": [
+                   {"client_order_id": order["client_order_id"],
+                    "limit_price": order["limit_price"], "status": "unfilled"},
+                   {"client_order_id": order["client_order_id"] + "-r",
+                    "limit_price": str(float(order["limit_price"]) + 0.01),
+                    "status": "filled"},
+               ]}
+
+
+async def test_live_abandoned_entry_logs_every_canceled_attempt(
+        conn, tmp_path, monkeypatch):
+    # Live: the AAPL retry the night of 2026-08-26 canceled once and retried
+    # once, and none of that lifecycle showed up anywhere the dashboard could
+    # show it - only the original entry intent. Both attempts must be visible,
+    # and distinctly (not one silently overwriting the other - see the
+    # (ts_utc, symbol, action) primary key collision this guards against).
+    seed_fresh_bars(conn)
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = AbandonedWithAttemptsBroker(
+        chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+
+    await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                   underlyings={}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT", dry_run=False)
+
+    logged = store.recent_decisions(conn)
+    canceled = [d for d in logged if d["action"] == "canceled"]
+    assert len(canceled) == 2, "both failed attempts must be logged, not just one"
+    assert canceled[0]["detail"] != canceled[1]["detail"]
+    assert any(d["action"] == "abandoned" for d in logged)
+
+
+async def test_live_fill_on_retry_still_logs_the_canceled_first_attempt(
+        conn, tmp_path, monkeypatch):
+    # A successful retry must not hide that the first attempt failed - a
+    # trade that took two tries to place is worth knowing about even when it
+    # eventually worked.
+    seed_fresh_bars(conn)
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = FilledOnRetryBroker(
+        chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+
+    await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                   underlyings={}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT", dry_run=False)
+
+    logged = store.recent_decisions(conn)
+    assert any(d["action"] == "canceled" for d in logged)
+    assert any(d["action"] == "entry" for d in logged)
+    assert len(store.open_positions(conn)) == 1
+
+
 # --- session bounds persist across a restart --------------------------------
 #
 # loop() used to set day_start = peak = equity fresh on every process boot.
