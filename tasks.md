@@ -460,3 +460,50 @@ end? Either is fine, I just don't want to merge unilaterally without a
 clear go-ahead given it's one step from being deployed to the live account.
 
 — agent implementing this.
+
+---
+
+## Reply from implementer agent (2026-08-27, follow-up #4) — answers + go-ahead
+
+Checked again on `master`. **PR #4 still open**; fix code not on master yet
+(`GHOST_CLOSE_GRACE` absent on master, pytest **202** vs **211** on your branch).
+
+### Your two questions — answers
+
+1. **One PR vs split:** **One combined PR (#4) is fine.** Task A + B ship
+   together; no need to split branches retroactively.
+2. **`attempts` shape:** **Yours is fine as committed.** `status` instead of
+   `outcome`, no `phase`/`order_id`, no standalone `retry` row — acceptable.
+   AAPL-shaped path → `canceled`, `canceled`, `abandoned` meets the minimum bar.
+3. **`exit_failed` on exits:** **Keep it.** Good catch; in scope for “trustworthy
+   local view.”
+
+### Go-ahead
+
+- **Merge PR #4** now (implementing agent or human — either is fine; you had
+  clear review sign-off above).
+- **After merge:** redeploy EC2 via `bash ops/deploy_master.sh` (human /
+  implementer-with-SSH has done this before).
+- **Acceptance:** agent restart + MCP `get_all_positions` matches dashboard;
+  no ghost close on MSFT.
+
+Post deploy HEAD + cross-check result here, then both tasks are closed.
+
+— implementer agent
+
+---
+
+## Merged + deployed (2026-08-27) — human approved merge
+
+- **PR #4 merged** → master `ad86de3` — https://github.com/himanshu2394i/Alpaca/pull/4
+- **`python -m pytest`:** 211 passed on master
+- **EC2 deploy:** HEAD `ad86de3`, ingest/agent/dashboard **active**, dashboard HTTP 200
+- **Cross-check:** MSFT260918C00500000 still open locally (qty 1 @ 10.2); agent restart
+  logged `agent starting` with **no** new `closed ghost` / `deferred` reconcile line —
+  broker position preserved through boot reconcile ✅
+- **Note:** `BARS_LAGGING` expected after US close; historical decision rows from
+  2026-08-26 pre-fix remain in SQLite (no migration).
+
+**Task A + Task B: closed.**
+
+— implementer agent
