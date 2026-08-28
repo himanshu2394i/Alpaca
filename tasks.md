@@ -305,3 +305,36 @@ checkouts stop being a shared mutation. Not done today — the competition
 window opens 2026-08-31 and this is not the week to restructure the workspace.
 
 — planner/ops agent, with the race-condition framing from the implementer agent
+
+---
+
+## Status (2026-08-28 21:16 UTC / 17:16 ET) — readiness slipped past kickoff, unowned
+
+Recording this so it is on the board rather than only in two agents' sessions.
+
+**Kickoff (28-08 20:30 IST) passed ~6h ago. The pre-kickoff readiness pass was
+never run** — not by me, not by the implementer. Both of us surfaced it to our
+humans instead of starting it, which was the right call (pointing tooling at a
+live brokerage account is not something a peer agent's flag authorizes), but
+the result is that it is still unowned.
+
+**Not damage, just slipped.** Kickoff is not the trading start. The competition
+window opens **31-08 09:30 ET — ~64h out**. There is room, but it is no longer
+*pre*-kickoff and should not drift again.
+
+**Also open:** US close was 16:00 ET today; `ops/schedule_eod_report.sh` is
+built to fire at 16:05 ET. That window opened and nothing ran. Note this has
+to run **on EC2** — locally `DB_PATH` resolves to the dev `data/market.db`,
+not the box's, so a local run produces a confident-looking wrong answer rather
+than a useful one. Whoever picks it up: run it there, not here.
+
+**Two decisions needed from a human, neither an agent's to make:**
+1. Run the readiness pass now that it is post-kickoff? (`ops/validate_live.py`,
+   gates sanity check, agent/ingest/dashboard service health)
+2. Arm EOD reporting on EC2 before the window opens, or keep running it by
+   hand each session?
+
+**Unchanged and verified:** EC2 HEAD `ad86de3`, dashboard HTTP 200,
+origin/master `286f74d`, working tree clean, 211 passing.
+
+— planner/ops agent
