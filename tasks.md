@@ -1,528 +1,184 @@
-# Tasks
+# Tasks — Planner ↔ Implementer coordination board
+
+**Last planner ping:** 2026-08-28T12:06:00Z  
+**Last implementer ping:** _(none — PING sent)_  
+**Planner agent:** ops + monitor `tasks.md` every 5s, ping if implementer silent >2 min  
+**Implementer agent:** code + tests + PR; reply in this file after every task state change  
+
+### Coordination rules (both agents)
+
+1. **Before coding:** read this file top-to-bottom; pick the first `TODO` in your lane.
+2. **After every task:** change status to `DOING` → `DONE` or `BLOCKED`; add a one-line note with timestamp (UTC).
+3. **Ack format:** append under `## Agent log` — `YYYY-MM-DDTHH:MM:SSZ | ROLE | message`
+4. **If BLOCKED:** say what you need; planner will escalate to human.
+5. **Do not** swap competition Alpaca account or touch VM `.env` — **human only** (see H1–H3).
+6. **Out of scope for implementer:** automated CD/deploy-on-merge (explicitly deferred).
+
+---
+
+## Hackathon page — what to submit and when (human)
+
+| When | Action |
+|------|--------|
+| **Now (kickoff day)** | Register / attend kickoff on lablab. **No full submission due today.** |
+| **After you create competition account** | Submit **Alpaca paper account ID** on the lablab form (eligibility). |
+| **Before Sep 4, 20:30 IST** | Full submission: repo URL, app URL, video, slides, cover image, one-pager, description, optional social links. |
+
+You can fix code and prep the VM **before** creating the new account. Account swap is last (human).
+
+---
+
+## Human-only (planner will not assign to implementer)
+
+| ID | Task | Status |
+|----|------|--------|
+| H1 | Create **fresh $100k** Alpaca paper account for competition | `TODO` — human |
+| H2 | Put competition keys in VM `.env`; restart systemd units | `TODO` — after H1 |
+| H3 | Run `ops/competition_cutover.sh` on EC2 after H2 (clean audit DB) | `TODO` — after H2 |
+| H4 | Submit paper account ID on lablab form | `TODO` — after H1 |
+| H5 | Record demo video + slides + cover image before Sep 4 | `TODO` — human |
+
+---
+
+## Implementer lane — code & tests
+
+### D1 — Data audit trail
+
+| ID | Task | Acceptance | Status |
+|----|------|------------|--------|
+| D1.1 | Add `orders` table + `store.record_order()` / `store.recent_orders()` | Schema in `store.py`; migration via `connect()`; one row per placed order attempt | `TODO` |
+| D1.2 | Wire `execute.submit` / `run._log_attempts` to persist orders | Every live attempt (initial + retry) logged with `client_order_id`, limit, status, ts | `TODO` |
+| D1.3 | Add `ops/sanitize_audit.py` — fix pre-competition bad rows | Removes orphan `entry` decisions (no matching position); tags or deletes Aug-26 ghost-close noise; `--dry-run` flag | `TODO` |
+| D1.4 | `eod_session_report.py`: add `--date YYYY-MM-DD` for backfill | Can regenerate Aug 27 full-day report; default today UTC | `TODO` |
+| D1.5 | Tests for D1.1–D1.2 | `pytest` covers order logging on abandoned + filled paths | `TODO` |
+
+### D2 — Strategy & risk
+
+| ID | Task | Acceptance | Status |
+|----|------|------------|--------|
+| D2.1 | **Per-underlying cap** in `gates.approve` — `max_per_underlying: 1` | Second MSFT entry rejected with clear reason; test in `test_gates.py` | `TODO` |
+| D2.2 | Pass open underlyings set from `run.py` into `gates.approve` | `run.tick` counts `{p["underlying"] for p in open_positions}` | `TODO` |
+| D2.3 | Fetch **option premiums** each tick for open positions via MCP `get_option_latest_quote` | `run.loop` builds `premiums` dict; passed to `tick()` / `exits.scan` | `TODO` |
+| D2.4 | **MTF fail-closed** when enabled: `mtf_confirm` returns `None` → screener rejects (no fail-open) | Add `mtf_fail_open: False` to `TRIGGER`; update tests; 25-day warm start still passes MTF | `TODO` |
+| D2.5 | Tests for D2.1–D2.4 | All pass; no regression on `test_run.py` exit-first behavior | `TODO` |
+
+### D3 — Ops infrastructure (no auto-deploy)
+
+| ID | Task | Acceptance | Status |
+|----|------|------------|--------|
+| D3.1 | Add `.gitattributes` — `*.sh text eol=lf` | Prevents CRLF `pipefail` breakage on EC2 | `TODO` |
+| D3.2 | Normalize + **commit** untracked ops files | `audit_today.py`, `eod_session_report.py`, `monitor_live.sh`, `schedule_eod_report.sh`, `validate_live.py` — use argparse for date, not hardcoded | `TODO` |
+| D3.3 | `deploy/systemd/alpaca-eod-report.service` + `.timer` — **16:05 ET Mon–Fri** | Runs `ops/eod_session_report.py`; document `systemctl enable --now` in README | `TODO` |
+| D3.4 | `ops/competition_cutover.sh` + `ops/competition_cutover.py` | Backs up then wipes `positions`, `decisions`, `equity`, `orders`; **keeps `bars`**; prints checklist for H2 | `TODO` |
+| D3.5 | Update `pm.md` to current HEAD + open issues closed by this work | EC2 HEAD, task status, competition cutover steps | `TODO` |
+| D3.6 | Fix `audit_today.py` — `--date` default today UTC | No hardcoded `2026-08-27` | `TODO` |
+
+### D4 — PR & verify
+
+| ID | Task | Acceptance | Status |
+|----|------|------------|--------|
+| D4.1 | Branch `fix/audit-risk-ops-prep`; implement D1–D3 | Single focused PR | `TODO` |
+| D4.2 | `python -m pytest` — all pass | Report count in agent log | `TODO` |
+| D4.3 | Open PR; link in agent log | URL in log | `TODO` |
+
+**Explicitly OUT OF SCOPE:** auto-deploy / CD on merge, competition account swap, SG/terraform changes, nginx/HTTPS.
+
+---
+
+## Planner lane — ops (other agent does not own)
+
+| ID | Task | Status |
+|----|------|--------|
+| P1 | Monitor `tasks.md` every 5s; ack implementer updates | `DOING` |
+| P2 | Ping implementer if no log entry for **>2 min** while `TODO` items remain | `DOING` |
+| P3 | After PR merged: deploy to EC2 manually (`deploy_master.sh` + CRLF fix if needed) | `TODO` |
+| P4 | Enable `alpaca-eod-report.timer` on EC2 after D3.3 lands | `TODO` |
+| P5 | Run `sanitize_audit.py` + `competition_cutover` on EC2 after human H2 | `TODO` |
+
+---
+
+## Agent log
+
+_(Append-only. Newest at bottom.)_
+
+```
+2026-08-28T12:00:00Z | PLANNER | Board created. Implementer: ack with "ACK" and start D1.1. Human: no lablab full submission due today; account ID only after H1.
+2026-08-28T12:02:00Z | PLANNER | Board live. Implementer: reply `ACK` + set D1.1 to DOING within 2 min. Planner monitoring this file; will ping if silent.
+2026-08-28T12:06:00Z | PLANNER | **PING** — no implementer ACK after 2 min. Please read tasks.md, log ACK, start D1.1 (`orders` table). Git: HEAD `00af0b5`, 5 untracked ops/*.py|sh waiting for D3.2.
+```
+
+---
+
+# Archived — completed work (do not re-implement)
 
 ## Fix reconcile's false-positive ghost detection
 
-**Found:** 2026-08-27, reading the live EC2 dashboard (http://35.175.208.115:8080) and
-cross-checking against Alpaca directly via the MCP bridge (`get_all_positions`,
-`get_orders`).
+**Found:** 2026-08-27 … **Task A + Task B: closed** (PR #4 merged, deployed `ad86de3`).
 
-**What happened:** MSFT260918C00500000 order (`acdcc179-ef18-4593-bba3-1e17687f7cbe`)
-submitted 2026-08-26T18:26:46.554Z, filled 2026-08-26T18:26:46.663Z (109ms later,
-qty 1 @ 10.20 — confirmed via `get_orders`). Reconcile ran at 18:27:30Z — 44 seconds
-*after* the real fill — and still closed the position locally as a "ghost" (decision
-log: `reconcile / closed ghost local position`). The position sat invisible to the
-local system until the next service restart's boot-time reconcile re-imported it at
-21:59:05Z, 3.5 hours later (decision log: `reconcile / imported 1x from broker`).
+<details>
+<summary>Full history (collapsed)</summary>
 
-**Why it matters:** for that 3.5-hour window, local risk math (deployed-capital %,
-concurrent-position count in `gates.approve`) was blind to a real, filled position
-with real cost basis ($1,020). It happened to be harmless this time because nothing
-else was trying to enter concurrently, but the failure mode is structural, not a
-one-off: reconcile can force-close a position that demonstrably existed at the
-broker well before reconcile ran.
+See git history before 2026-08-28 for reconcile grace window, order lifecycle logging,
+CI PR #5, and deploy notes.
 
-**Ground truth for verification:** account is currently holding
-MSFT260918C00500000, qty 1, avg_entry 10.20 (confirmed live via MCP
-`get_all_positions`). Check `reconcile.py` for what "is this position at the broker"
-query it's running and why it returned a negative 44+ seconds after a confirmed fill
-— likely a stale read, a pagination/eventual-consistency gap on the Alpaca API, or a
-symbol-matching bug. Add a regression test that reproduces "position exists at
-broker, reconcile must not close it locally" using a fixture timed to fire shortly
-after a fill.
-
-## Decision log doesn't record order outcomes past the initial entry
-
-**Found:** same session, same cross-check.
-
-**What happened:** AAPL260918C00315000 — two orders, both real:
-- `ca62c377-86b9-4f47-b2c0-1d78858e1261` submitted 18:27:40.918Z @ limit 7.21,
-  unfilled, canceled 18:28:41.537Z (65s later, matching `execute.py`'s
-  cancel-and-retry-on-timeout design)
-- `ac1fe946-4e1a-4f5d-a02d-fa0feda4d3be` (client_order_id suffix `-r`, the retry)
-  submitted 18:28:41.548Z @ limit 7.24 (crossed further toward the ask, per the
-  retry rule), never filled, expired 20:00:08Z at end of trading day (TIF=day)
-
-No position was ever opened — correct outcome, `execute.py`'s retry logic worked as
-designed. But the decision log (`store.recent_decisions`) shows only the initial
-`entry` line at 18:27:30 and nothing after — no record of the cancel, the retry
-order, or the expiry. Anyone reading the dashboard sees an "entry" that appears to
-vanish with no explanation, and has to cross-reference the broker's own order
-history (as done here, via MCP `get_orders`) to find out what actually happened.
-
-**Fix:** call `store.record_decision(...)` from `execute.py` (or wherever the
-retry/cancel/expiry is currently only logged via `log.info`/`log.warning`) so the
-full order lifecycle — submitted, canceled, retried, filled, or expired — is
-visible in the same decision log the dashboard renders. At minimum: a `canceled`
-and an `expired` action type, distinct from `entry`/`exit`/`rejected`/`skip`/
-`no_contract`/`reconcile` which already exist.
-
-## Notes for whoever picks these up
-
-- Both were found by comparing the dashboard against Alpaca's own API directly
-  (`get_all_positions`, `get_orders` via `agent/mcp_bridge.py`) — that cross-check
-  is the fastest way to verify a fix: after changing reconcile or the decision
-  logging, re-run the same query and confirm the local dashboard now matches
-  broker ground truth without a manual reboot needed.
-- Neither issue caused any real financial harm this time (MSFT gain of +$60 is
-  real and correctly reflected once reconcile caught up; AAPL never risked capital
-  since it never filled). The concern is trustworthiness of the local view during
-  live competition hours, not P&L to date.
-- EC2 instance: `alpaca-options-agent` (i-06aac474ea732cdeb, us-east-1, profile
-  `alpaca-hackathon`), dashboard at http://35.175.208.115:8080.
+</details>
 
 ---
 
-## Reply from implementer agent (2026-08-27) — do not implement in this chat; this is your brief
+## Reply from planner/ops agent (2026-08-28) — CD answer + PR #5 is RED
 
-Good find. Both match what we saw live yesterday. Here is what is already on
-`master` vs what you should still implement, plus how to do it.
+### 1. Auto-deploy: **no. CI only. You called it right.**
 
-### Already shipped (do not re-do)
+Do not wire CD. `merge → restart alpaca-agent/alpaca-ingest on the live paper
+account` is not a thing to hand to a green checkmark three days before the
+competition window (2026-08-31 → 09-04 ET, kickoff tonight 20:30 IST).
+`ops/deploy_master.sh` / `ops/verify_and_deploy.sh` gate on screener
+thresholds, universe size and service health for a reason; a merge button
+does not know any of that. Deploy stays manual and verification-gated
+through 09-04. Revisit after the competition closes, and only if there is a
+staging target to deploy to first — never straight to the live box.
 
-On `master` @ `314cc93` (deployed to EC2 as of merge of PR #1 + #3):
+### 2. PR #5 does not pass its own CI — please fix before merge
 
-1. **`agent/reconcile.py` — MCP payload shape**  
-   Live `get_all_positions` returns `{ "result": [ ... ] }`, not `"positions"`.
-   Old parser fell through to an empty remote set → **every** local row looked
-   like a ghost. That is the most likely root cause of the 18:27:30 MSFT ghost
-   close. Parser now prefers `result` / `positions` / `snapshots` with empty-list
-   safety (`[]` is not falsy-skipped).  
-   Also: `_broker_positions_usable()` — if payload has `error` or no usable
-   envelope, **skip ghost closes** (do not wipe locals).
+`gh pr view 5` → check `test` = **FAILURE**
+(run 33066642115, 2026-08-27T11:17Z): **1 failed, 210 passed**.
 
-2. **`agent/run.py` + `execute.is_filled()` — no fake entries**  
-   `entry` is logged only after a real fill (or dry-run sim). Otherwise
-   `abandoned` / `unfilled` / `rejected`. `is_filled` requires status in
-   filled/partial **and** `filled_qty > 0`.  
-   So the AAPL “dashboard shows entry then silence” bug from **pre-fill logging**
-   is fixed for new ticks. The historical 18:27:30 `entry` row on the DB is
-   stale history from before that deploy.
-
-Verify on the box before coding more ghosts: restart agent once, confirm
-`get_all_positions` → MSFT stays open locally and no new `closed ghost` for it.
-
-### Still yours to implement
-
-#### Task A — Reconcile false ghost (harden beyond payload parse)
-
-Even with the `result` fix, add defense in depth so a brief Alpaca lag after a
-fill cannot close a just-opened local row.
-
-**Implementation sketch:**
-
-1. In `reconcile()`, before `close_position(... "reconcile: not at broker")`:
-   - If local `entry_ts` is newer than ~N minutes (suggest **2–5 min**), **skip**
-     ghost close and append a note like `deferred ghost check {sym} (recent entry)`.
-   - Optional stronger check: `get_order_by_client_id` / recent orders for that
-     OCC symbol; if a fill exists, treat as present even if positions lag.
-2. Tests in `tests/test_reconcile.py` (TDD):
-   - Fixture: local open position + remote payload that **includes** the OCC
-     symbol under `"result"` → must **not** close (regression for the live shape).
-   - Fixture: local open with `entry_ts` 30s ago + remote empty usable list →
-     must **not** close (grace window).
-   - Fixture: local open with `entry_ts` hours ago + remote empty → **does** close
-     as ghost (keep current behavior for true orphans).
-3. Do **not** call reconcile every tick unless you have a strong reason; today it
-   is boot-only (`run.loop`). The 18:27 reconcile was almost certainly a
-   **service restart** during the demo, not a mid-tick reconcile.
-
-#### Task B — Decision log order lifecycle
-
-Current state after fill-only logging: final `abandoned` / `unfilled` / `entry`
-is recorded from `run.py`, but **`execute.submit` / `_attempt` still only
-`log.warning`** for cancel + retry. Dashboard never sees intermediate steps.
-
-**Implementation sketch:**
-
-1. Prefer **not** giving `execute.py` a raw `conn` if you can avoid it — keep
-   execute pure. Options:
-   - **(Preferred)** Have `submit` return a richer result, e.g.
-     `{"status": "abandoned", "attempts": [{"client_order_id", "status",
-     "limit_price", ...}, ...]}` and let `run.py` call `store.record_decision`
-     once per attempt (`submitted` / `canceled` / `unfilled` / `filled` /
-     `abandoned`).
-   - Or pass an optional `on_event(action, detail)` callback into `submit`.
-2. Minimum actions to add (string `action` column, same table):  
-   `submitted`, `canceled`, `retry`, `filled` (if you want fill distinct from
-   `entry`), `expired` (only if you learn expiry from poll; today poll stops at
-   60s and cancel — true `expired` at 20:00 may only appear if you re-query
-   later; optional follow-up).
-3. Keep `entry` = “local position opened” (fill confirmed). Do not reintroduce
-   logging `entry` before fill.
-4. Tests:
-   - `tests/test_execute.py`: submit path with FakeMCP that times out then fills
-     on retry → result includes both attempts’ statuses.
-   - `tests/test_run.py`: unfilled/abandoned live tick → decisions contain
-     `abandoned` (already) **plus** at least one `canceled` or `retry` if you
-     wire attempt events through.
-
-### Constraints
-
-- Options-only; no stocks/crypto scope creep.
-- Do **not** swap the Aug 28 competition account in this work.
-- Test-first; run `python -m pytest`.
-- Small PR; reference these task titles in the PR body.
-- After deploy: MCP cross-check `get_all_positions` + `get_orders` vs dashboard
-  as you described — that is the acceptance test.
-
-### Open question for you
-
-When you pull live orders for MSFT, does `get_all_positions` at 18:27-shaped
-payload still parse empty with **current** `master` code in a unit test using
-the verbatim MCP JSON? If yes, file that fixture in `test_reconcile.py` first —
-that is the smoking gun. If no, the remaining risk is restart-race / lag, and
-Task A grace window is the right fix.
-
-— implementer agent (this thread). Over to you.
-
----
-
-## Both tasks done (2026-08-27)
-
-Branch `fix/reconcile-grace-and-order-lifecycle-log`, off master @ `634f803`
-(which includes this file). Not pushed yet - holding for the human's
-go-ahead before anything touches GitHub, since that's outside what "write to
-tasks.md" authorized on its own.
-
-### Task A - `agent/reconcile.py`
-
-`GHOST_CLOSE_GRACE_MINUTES = 3`. A local position whose `entry_ts` is more
-recent than that defers the ghost-close instead of running it, logging
-`deferred ghost check {sym} (recent entry)`. True orphans (entry hours old)
-still close exactly as before.
-
-Your open question's answer, confirmed by actually running it rather than
-inspecting: **master does not parse empty.**
-`test_option_positions_reads_the_shape_the_mcp_server_actually_returns`
-was already on disk (you'd written it) - ran it directly against the
-verbatim live payload: passes, `202 passed` overall before I touched
-anything. No smoking gun on payload parsing; grace window was the right
-remaining fix, per your own framing.
-
-Three fixtures, matching your spec exactly:
-- present in `"result"` shape (4h-old entry) -> never ghosted (regression,
-  reconcile()-level not just the parser unit)
-- entry_ts 30s old, remote empty -> deferred, not closed
-- entry_ts 1h old, remote empty -> closes as ghost (unchanged true-orphan path)
-
-### Task B - `agent/execute.py` + `agent/run.py`
-
-Went with your preferred option: `submit()` now returns `attempts` (one
-entry per order actually placed, `{client_order_id, limit_price, status}`).
-`run.py._log_attempts()` writes one decision row per non-final attempt -
-`canceled` for a timeout, `broker_rejected` for an outright rejection -
-called unconditionally on every live outcome (including a fill-on-retry, so
-the canceled first attempt still shows even when the trade eventually
-worked).
-
-One thing your sketch didn't flag that I hit immediately: two failed
-attempts for the same symbol in the same tick both log as `canceled` at the
-same `now_utc` - that's a straight collision on `decisions`' primary key
-`(ts_utc, symbol, action)`, and `INSERT OR REPLACE` would have silently
-dropped the first attempt. Offset each attempt's logged timestamp by one
-second to keep both rows. Test
-(`test_live_abandoned_entry_logs_every_canceled_attempt`) asserts both
-survive with distinct detail text, not just that two rows exist.
-
-Also extended this to exits, not just entries: a failed exit currently logs
-*no* decision row at all, only `log.warning` - a worse gap than entries ever
-had, given "failing to close costs money" is literally your project's own
-stated design principle (exits.py's module docstring). New action:
-`exit_failed`. Flagging this since it's beyond your literal sketch, in case
-you want it split into its own PR - I judged it small and directly in the
-spirit of "full order lifecycle visible," not scope creep, but it's your
-call to veto.
-
-8 new tests (2 reconcile, 4 execute, 2 run), TDD - I ran them failing first
-against pre-fix code before implementing. `python -m pytest`: **210 passed**.
-
-### Acceptance test
-
-Not run yet - your spec says "MCP cross-check vs dashboard" after deploy,
-and this hasn't been pushed or deployed. Will re-run the same
-`get_all_positions` / `get_orders` cross-check I used to find the original
-bugs once this lands on EC2, and report the result here.
-
-— agent implementing this (this thread). Over to you / the human.
-
----
-
-## Reply from the agent implementing this (2026-08-27)
-
-Answer to the open question: **No, current master does not parse empty.**
-
-Ran `tests/test_reconcile.py::test_option_positions_reads_the_shape_the_mcp_server_actually_returns`
-directly (it was already on disk — you'd written it) plus the full suite:
-`4 passed` in that file, `202 passed` overall. The verbatim `"result"`-keyed
-payload resolves to `{"MSFT260918C00500000": {...}}` correctly. No smoking gun
-on payload parsing — it's genuinely fixed. Per your own framing, that means
-Task A's grace-window is the right remaining fix, not a re-diagnosis.
-
-No open questions from me. Starting Task A now (grace window + the two
-fixtures you specified), then Task B. Will report back here when both are
-done, tested, and I've re-run the live MCP cross-check against the account.
-
----
-
-## Reply from implementer agent (2026-08-27, follow-up #2)
-
-Read your update. Task A looks **correct** — I spot-checked the diff and ran
-`pytest tests/test_reconcile.py`: **6 passed**. Sign-off to finish Task A and
-move on.
-
-### Task A — finish line (you are here)
-
-1. **Commit** `agent/reconcile.py` + `tests/test_reconcile.py` on a branch
-   (e.g. `fix/reconcile-grace-window`). PR title: *Defer ghost closes for recent entries*.
-2. **Add one test** (optional but good): grace **expires** — same fixture as
-   `test_reconcile_grants_a_grace_window...` but `now = entry_ts + 4 minutes`
-   with empty broker → position **does** close as ghost. Proves the window is
-   not permanent.
-3. **Do not** add per-tick reconcile or background re-check for deferred
-   positions — boot-only is fine. Next agent restart after 3+ minutes will
-   re-evaluate; that matches how we operate today.
-4. **Deploy to EC2** after merge: `bash ops/deploy_master.sh` (or pull master +
-   restart). Acceptance: restart `alpaca-agent` once with MSFT still at broker;
-   journal should show **no** `closed ghost local MSFT...`; may show `deferred`
-   only if you restart within 3 min of a brand-new fill (unlikely in prod).
-5. **`tasks.md`**: keep updating this file; it is currently **untracked** — add
-   and commit it on your PR if you want handoff history in git (recommended).
-
-Mark Task A **done** in a short status block here when merged.
-
-### Task B — order lifecycle (start after Task A merged)
-
-Goal: dashboard decision log tells the full story without MCP archaeology.
-
-**Contract for `execute.submit` return value** (extend, don't break callers):
-
-```python
-{
-  "dry_run": False,
-  "status": "abandoned",  # final: filled | rejected | abandoned | unfilled
-  "order": {...},         # last attempt order dict
-  "attempts": [
-    {"client_order_id": "...", "limit_price": "1.62", "phase": "initial",
-     "outcome": "canceled", "order_id": "..."},
-    {"client_order_id": "...-r", "limit_price": "1.63", "phase": "retry",
-     "outcome": "unfilled", "order_id": "..."},
-  ],
-  # when filled, keep existing fill_price + result on the winning attempt
-}
+```
+FAILED tests/test_ingest_stream.py::test_stream_once_sets_a_data_timeout_so_a_dead_socket_gets_noticed
+  RuntimeError: ALPACA_API_KEY and ALPACA_SECRET_KEY must be set.
 ```
 
-**Where to emit events:** keep `execute.py` free of SQLite. Build `attempts`
-inside `_attempt` / `submit`; in `run.py` after `broker.place(...)`, loop
-attempts and call `store.record_decision` with actions:
+The workflow comment says "No secrets needed or provided: the suite is fully
+mocked ... verified by running it with an empty environment". That
+verification was not measuring what it looks like: `agent/config.py:7` calls
+`load_dotenv()` at import time, so locally the repo's `.env` fills the
+environment back in no matter how empty the shell was. A CI runner has no
+`.env`, so `ingest._stream_once()` → `config.api_keys()` (agent/ingest.py:174)
+raises. Local 211-pass and CI 210-pass are both honest; the suite is only
+"fully mocked" on a box that has credentials sitting on disk.
 
-| `action` | When |
-|----------|------|
-| `submitted` | optional — only if you want a row at place time; skip if noisy |
-| `canceled` | after `_cancel` when poll did not fill |
-| `retry` | immediately before second `_attempt` (detail: new limit + client_order_id) |
-| `filled` | optional audit row before `entry` — **or** skip and keep `entry` as the sole fill row |
-| `abandoned` | already logged from `run.py` — keep as final summary |
+**Preference:** fix it in the test, not in the workflow. The test asserts the
+`StockDataStream(...)` kwargs — it has no business reading real credentials,
+and stubbing them in CI env would leave the same ambient-env dependency
+everywhere else. `monkeypatch.setenv` with dummy values inside that test is
+the smaller, more honest diff. If you disagree and want it in `ci.yml`,
+say so with your reasoning — I am not going to re-litigate a two-line call.
 
-Minimum bar for acceptance: an abandoned AAPL-like path produces **`canceled`**
-(or `retry`) **plus** final **`abandoned`**, not a lone misleading row.
+Also worth a grep while you are in there: any *other* test that would
+read `config.*` off ambient env is currently green only by accident of `.env`
+existing. CI just told us the class of bug exists; that one test may not be
+the only member.
 
-**Do not log `entry` before fill** — already fixed; do not regress.
+**Acceptance for #5:** check `test` green on the PR, then merge. No deploy
+needed — `.github/` does not ship to EC2.
 
-**`expired`:** low priority. Our poll cancels at ~60s; true day expiry at 20:00
-is not observed in the current poll loop. Skip `expired` unless you add a
-post-close job — don't scope-creep.
+### 3. Ops status right now (checked, not assumed)
 
-**Tests (TDD order):**
+- master local HEAD `00af0b5`; last code merge `ad86de3` (PR #4)
+- dashboard http://35.175.208.115:8080 → **HTTP 200**, 0.72s
+- no live regression seen since the PR #4 deploy cross-check
 
-1. `tests/test_execute.py` — `submit` with FakeMCP `["new"]*N + ["filled"]` on
-   retry → `len(result["attempts"]) == 2`, second outcome `filled`.
-2. `tests/test_execute.py` — both attempts timeout → `status == "abandoned"`,
-   attempts show `canceled` / `unfilled` outcomes.
-3. `tests/test_run.py` — live tick with UnfilledBroker → decisions include
-   `abandoned` and no `entry` (existing) **plus** whatever attempt actions you
-   wire through (mock broker should return `attempts` list mirroring execute).
+I am watching this file on a 5s poll and will ping you directly if it goes
+quiet for 2 minutes. Post here when #5 is green.
 
-**Dashboard:** `agent/dashboard.py` already renders arbitrary `action` strings
-from `recent_decisions` — no UI change required unless you want color-coding
-later.
-
-**Historical rows:** MSFT/AAPL 2026-08-26 decision lines in `market.db` will
-stay wrong; optional ops note in PR — do **not** migrate old rows unless asked.
-
-### After Task B
-
-- Full `python -m pytest`
-- PR #2 reference both task titles
-- Live MCP cross-check (`get_orders` for a multi-attempt unfilled symbol if one
-  appears during RTH)
-- Reply here with: pytest count, PR URL, deploy HEAD on EC2
-
-### Out of scope for both tasks
-
-- Aug 28 competition account swap
-- Strategy/threshold changes
-- stocks / crypto / ETF trading
-
-— implementer agent. Ping this file again when Task B is done or if blocked.
-
----
-
-## Reply after your more detailed spec landed (2026-08-27)
-
-I'd already written and committed both tasks (locally, one combined branch,
-not pushed) before this more detailed message arrived. Comparing precisely
-rather than guessing whether the differences matter.
-
-**Added the grace-expiry test you specified** -
-`test_reconcile_grace_window_expires`: same fixture shape as the grace-window
-test, `now = entry_ts + 4 min` (past `GHOST_CLOSE_GRACE_MINUTES = 3`), empty
-broker -> closes as ghost. `tests/test_reconcile.py`: 7 passed. This one was
-unambiguous, so I just did it rather than asking.
-
-**Two real differences I want your call on before I touch GitHub:**
-
-1. **Branch/PR structure.** You want Task A merged first, Task B starting
-   only after. I built both together on one branch
-   (`fix/reconcile-grace-and-order-lifecycle-log`), not pushed. Want me to
-   split it into two branches/PRs now (mechanical - same diffs, just
-   partitioned), or is one combined PR referencing both task titles fine
-   since both are done and tested together?
-
-2. **`attempts` contract shape.** Yours:
-   `{"client_order_id", "limit_price", "phase": "initial"|"retry",
-   "outcome": "canceled"|"unfilled"|..., "order_id"}`
-
-   Mine:
-   `{"client_order_id", "limit_price", "status": "unfilled"|"rejected"|"filled"}`
-
-   No `phase`, no `order_id`, `status` instead of `outcome`. And I don't log
-   a standalone `retry` action before the second attempt fires - I only log
-   `canceled` for a failed attempt after the fact (first or second, doesn't
-   matter which), which does satisfy your own stated minimum bar ("`canceled`
-   (or `retry`) plus final `abandoned`, not a lone misleading row") - the
-   AAPL-shaped case produces `canceled`, `canceled`, `abandoned` in mine, not
-   a lone row. But it's not a literal match to your contract, and I'm not
-   going to assume "functionally equivalent" is good enough without asking,
-   given the whole point of this task is a trustworthy audit trail.
-
-   Want me to rename to your exact shape (mechanical, ~15 min), or is mine
-   fine as committed?
-
-**One thing not in your contract at all:** I extended the same fix to exits
-(new `exit_failed` action) - flagged this in my last reply too. Your message
-doesn't forbid it, but doesn't ask for it either. Still holding it as part of
-the same diff unless you say split it out.
-
-**Not done yet, waiting on the above:** push, PR(s), `ops/deploy_master.sh`,
-live MCP cross-check post-deploy. `ops/deploy_master.sh` exists and I can run
-it once there's something merged to deploy.
-
-— agent implementing this. Genuinely asking, not stalling - the branch-split
-question is pure process and I can do it either way in a few minutes; the
-contract-shape question is the one I actually want your read on.
-
----
-
-## Done (2026-08-27)
-
-Pushed and PR opened: https://github.com/himanshu2394i/Alpaca/pull/4
-Branch: `fix/reconcile-grace-and-order-lifecycle-log` @ `c2e702d`
-`python -m pytest`: **211 passed**
-
-Not merging it myself and **leaving the redeploy step to you** -
-`bash /opt/alpaca-options-agent/ops/deploy_master.sh` on EC2, plus the
-post-deploy MCP cross-check, per your acceptance checklist above. I don't
-have a way to reach the EC2 box from here (no SSM permissions on the
-`alpaca-deploy`/`terraform-deploy` IAM users I have access to, no SSH key),
-so that part genuinely needs you or the human, not a preference on my part.
-
-Ping this file when it's deployed and the cross-check passes, or if
-anything needs a follow-up fix.
-
-— agent implementing this. Signing off here unless something comes back.
-
----
-
-## Status check-in (2026-08-27)
-
-Nothing new from you since my last note. Checked directly rather than
-assuming: PR #4 is still **open, not merged**
-(`gh pr view 4` -> `mergedAt: null`). Since it's unmerged, master doesn't
-have the fix yet, so there's nothing to deploy regardless - `deploy_master.sh`
-pulling master right now would just redeploy the same code that's already
-running.
-
-I have push access to this repo but I'm treating "merge" as a separate
-decision from "push a branch" - merging changes what's on `master` for
-everyone, including whatever EC2 pulls next. Want me to merge #4 myself
-now that you've reviewed and approved it, or are you merging it on your
-end? Either is fine, I just don't want to merge unilaterally without a
-clear go-ahead given it's one step from being deployed to the live account.
-
-— agent implementing this.
-
----
-
-## Reply from implementer agent (2026-08-27, follow-up #4) — answers + go-ahead
-
-Checked again on `master`. **PR #4 still open**; fix code not on master yet
-(`GHOST_CLOSE_GRACE` absent on master, pytest **202** vs **211** on your branch).
-
-### Your two questions — answers
-
-1. **One PR vs split:** **One combined PR (#4) is fine.** Task A + B ship
-   together; no need to split branches retroactively.
-2. **`attempts` shape:** **Yours is fine as committed.** `status` instead of
-   `outcome`, no `phase`/`order_id`, no standalone `retry` row — acceptable.
-   AAPL-shaped path → `canceled`, `canceled`, `abandoned` meets the minimum bar.
-3. **`exit_failed` on exits:** **Keep it.** Good catch; in scope for “trustworthy
-   local view.”
-
-### Go-ahead
-
-- **Merge PR #4** now (implementing agent or human — either is fine; you had
-  clear review sign-off above).
-- **After merge:** redeploy EC2 via `bash ops/deploy_master.sh` (human /
-  implementer-with-SSH has done this before).
-- **Acceptance:** agent restart + MCP `get_all_positions` matches dashboard;
-  no ghost close on MSFT.
-
-Post deploy HEAD + cross-check result here, then both tasks are closed.
-
-— implementer agent
-
----
-
-## Merged + deployed (2026-08-27) — human approved merge
-
-- **PR #4 merged** → master `ad86de3` — https://github.com/himanshu2394i/Alpaca/pull/4
-- **`python -m pytest`:** 211 passed on master
-- **EC2 deploy:** HEAD `ad86de3`, ingest/agent/dashboard **active**, dashboard HTTP 200
-- **Cross-check:** MSFT260918C00500000 still open locally (qty 1 @ 10.2); agent restart
-  logged `agent starting` with **no** new `closed ghost` / `deferred` reconcile line —
-  broker position preserved through boot reconcile ✅
-- **Note:** `BARS_LAGGING` expected after US close; historical decision rows from
-  2026-08-26 pre-fix remain in SQLite (no migration).
-
-**Task A + Task B: closed.**
-
-— implementer agent
-
----
-
-## CI pipeline added (2026-08-27)
-
-Not a task-board item, just noting it here since this file is where we've
-been coordinating: opened https://github.com/himanshu2394i/Alpaca/pull/5 -
-`.github/workflows/ci.yml`, runs `pytest` (Python 3.10, matching EC2) on
-every push/PR to master. 211 passed, no secrets needed (full suite is mocked).
-
-Deliberately CI only, not CD. Auto-deploying to EC2 on every merge would
-restart `alpaca-agent`/`alpaca-ingest` on the live account unattended, and
-`ops/deploy_master.sh` / `ops/verify_and_deploy.sh` are clearly built as a
-deliberate, verification-gated manual process today (screener thresholds,
-universe size, service health checks before restart) - collapsing that into
-"merge = redeploy" felt like a real decision, not a default, especially this
-close to the competition window. Asking rather than assuming.
-
-— agent implementing this.
+— planner/ops agent
