@@ -1,7 +1,7 @@
 # Tasks — Planner ↔ Implementer coordination board
 
-**Last planner ping:** 2026-08-28T12:06:00Z  
-**Last implementer ping:** _(none — PING sent)_  
+**Last planner ping:** 2026-08-29T00:15:00Z  
+**Last implementer ping:** _(none — still silent)_  
 **Planner agent:** ops + monitor `tasks.md` every 5s, ping if implementer silent >2 min  
 **Implementer agent:** code + tests + PR; reply in this file after every task state change  
 
@@ -40,6 +40,35 @@ You can fix code and prep the VM **before** creating the new account. Account sw
 
 ---
 
+## URGENT — exits failed live (2026-08-28) — do this first
+
+Live evidence from EC2 `market.db` + `journalctl -u alpaca-agent`:
+
+- Equity **high $104,474.57** at 16:32:57Z → **close $101,864.57** (−$2,610 from high). Matches the user's $104.5k → ~$101.85k.
+- **One exit did fill:** MSFT $500C sold 14:47:29Z @ **$20.45** (entry $10.20) — reason `underlying 513.18 reached target 512.98`. That is the spike to ~$104.5k.
+- **NVDA $225C stop DID fire** at 16:02:18Z (`underlying 220.91 broke stop 220.96`). First NVDA close ≤ 220.96 was **16:01 ET-window 16:01Z**. Then **320 `exit` / `exit_failed` rows** through 00:12Z Aug 29, every tick **`status=abandoned`**. Position **still open** qty=2 @ $7.50. Agent is still retrying after hours.
+- **MSFT remaining legs never hit underlying stops** (last 513.67 vs stops 493–505). Premium giveback on those marks was invisible to exits because premiums are never fetched.
+
+Root causes (code, not “the market”):
+
+1. **`run.loop` never passes `premiums` into `tick()`** → `premiums={}` always. Premium stop −40% / target +80% **never run in production**. (Already D2.3.)
+2. **`_contract_for_exit` prices the sell off `entry_price` when premium is missing.** NVDA crashed; sell limit sits near **$7.50** while the option is worth much less → unfillable. Retry uses the same fake bid/ask. 60s poll × 2 then abandon, next tick repeats forever.
+3. **No after-hours / unfillable backoff.** Failed stop-out keeps firing all night.
+4. **No live option quote on exit** (D2.3). Forced/stop exits must use `get_option_latest_quote` and sell at/through the **bid**.
+
+| ID | Task | Acceptance | Status |
+|----|------|------------|--------|
+| X1 | Fetch live option quotes each tick; pass `premiums` into `tick()` / `exits.scan` | Journal shows premium values; −40% stop can fire without underlying stop | `DONE` |
+| X2 | Price exit orders from **live bid/ask**, never from `entry_price` | `_contract_for_exit` requires a quote; if missing, skip place and log `exit_failed no_quote` (do not fake 0.99×entry) | `DONE` |
+| X3 | Stop-out / forced exit: sell limit **at bid** (or slightly through), not mid | NVDA-shaped crash fills within one poll in tests with FakeMCP | `DONE` |
+| X4 | After 2 abandoned exit attempts in a tick, next ticks: retry immediately at bid; **do not** keep 2×60s mid-limit | Tests + no 300-row overnight spam | `DONE` (one bid attempt via `aggressive=True`) |
+| X5 | Do not place option exits when US options session is closed (or use valid extended session); log once | No `abandoned` storm after 16:00 ET | `DONE` |
+| X6 | Tests: exit with missing premiums does not submit a limit at entry_price; live-quote sell uses bid | `test_run.py` / `test_execute.py` | `DONE` |
+
+Do **not** flatten from this chat unless the human asks. NVDA is still open overnight.
+
+---
+
 ## Implementer lane — code & tests
 
 ### D1 — Data audit trail
@@ -58,7 +87,7 @@ You can fix code and prep the VM **before** creating the new account. Account sw
 |----|------|------------|--------|
 | D2.1 | **Per-underlying cap** in `gates.approve` — `max_per_underlying: 1` | Second MSFT entry rejected with clear reason; test in `test_gates.py` | `TODO` |
 | D2.2 | Pass open underlyings set from `run.py` into `gates.approve` | `run.tick` counts `{p["underlying"] for p in open_positions}` | `TODO` |
-| D2.3 | Fetch **option premiums** each tick for open positions via MCP `get_option_latest_quote` | `run.loop` builds `premiums` dict; passed to `tick()` / `exits.scan` | `TODO` |
+| D2.3 | Fetch **option premiums** each tick for open positions via MCP `get_option_latest_quote` | `run.loop` builds `premiums` dict; passed to `tick()` / `exits.scan` | `DONE` (via X1 quotes) |
 | D2.4 | **MTF fail-closed** when enabled: `mtf_confirm` returns `None` → screener rejects (no fail-open) | Add `mtf_fail_open: False` to `TRIGGER`; update tests; 25-day warm start still passes MTF | `TODO` |
 | D2.5 | Tests for D2.1–D2.4 | All pass; no regression on `test_run.py` exit-first behavior | `TODO` |
 
@@ -105,6 +134,8 @@ _(Append-only. Newest at bottom.)_
 2026-08-28T12:00:00Z | PLANNER | Board created. Implementer: ack with "ACK" and start D1.1. Human: no lablab full submission due today; account ID only after H1.
 2026-08-28T12:02:00Z | PLANNER | Board live. Implementer: reply `ACK` + set D1.1 to DOING within 2 min. Planner monitoring this file; will ping if silent.
 2026-08-28T12:06:00Z | PLANNER | **PING** — no implementer ACK after 2 min. Please read tasks.md, log ACK, start D1.1 (`orders` table). Git: HEAD `00af0b5`, 5 untracked ops/*.py|sh waiting for D3.2.
+2026-08-29T00:15:00Z | PLANNER | **URGENT X1–X6** — exits are broken in prod. NVDA stop fired 16:02Z, 320 abandoned sells, still open. Loop never passes premiums; exit limit priced off entry. Implementer: ACK and start X1, not D1.1. Human: $104.5k was MSFT500C fill @20.45; giveback is unmarked MSFT + stuck NVDA.
+2026-08-29T00:45:00Z | IMPLEMENTER | X1–X6 done on `fix/exit-live-quotes`. Quotes each tick; sell at live bid (`aggressive`); no entry-price fake quotes; skip after 16:00 ET. pytest **218 passed**. No flatten. Needs merge + EC2 deploy (P3) before next RTH.
 ```
 
 ---

@@ -155,8 +155,13 @@ def _attempt_summary(order: dict, outcome: dict) -> dict:
 async def submit(sess, order: dict, dry_run: bool = True,
                  contract: Contract | None = None, ts_utc: str | None = None,
                  poll_seconds: float = POLL_SECONDS,
-                 poll_interval: float = POLL_INTERVAL) -> dict:
+                 poll_interval: float = POLL_INTERVAL,
+                 aggressive: bool = False) -> dict:
     """Place an order, poll for a fill, cancel and retry once if needed.
+
+    `aggressive=True` (exits): one attempt at the far side of the spread
+    (ask for buys, bid for sells). Stop-outs must not sit at mid for a
+    minute and then retry — that is how NVDA never filled.
 
     The returned dict always carries `attempts`: one entry per order actually
     placed, in order, so a caller can log the full lifecycle (canceled,
@@ -171,6 +176,17 @@ async def submit(sess, order: dict, dry_run: bool = True,
 
     if contract is None or ts_utc is None:
         raise ValueError("contract and ts_utc are required for live submission")
+
+    if aggressive:
+        touch = build_order(contract, int(order["qty"]), order["side"],
+                            ts_utc, retry=True)
+        first = await _attempt(sess, touch, contract, poll_seconds, poll_interval)
+        attempts = [_attempt_summary(touch, first)]
+        if first["status"] in ("filled", "rejected"):
+            return {**first, "attempts": attempts}
+        log.warning("order abandoned: %s", order["symbol"])
+        return {"dry_run": False, "status": "abandoned", "order": touch,
+                "attempts": attempts}
 
     first = await _attempt(sess, order, contract, poll_seconds, poll_interval)
     attempts = [_attempt_summary(order, first)]
