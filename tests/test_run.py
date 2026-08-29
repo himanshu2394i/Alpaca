@@ -30,7 +30,7 @@ class FakeBroker:
     async def fetch_chain(self, *a, **kw):
         return self.chain
 
-    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None, **kw):
         self.orders.append((order, dry_run))
         if dry_run:
             return {"dry_run": True, "status": "simulated", "order": order}
@@ -41,6 +41,11 @@ class FakeBroker:
 def open_a_losing_position(conn):
     store.open_position(conn, symbol="SPY260911C00765000",
                         entry_ts="2026-08-24T14:05:00Z", **BASE)
+
+
+# Live quotes for the test position. Bid/ask must be real — exits must not
+# fall back to entry_price ($2.00) when the option has already collapsed.
+EXIT_QUOTES = {"SPY260911C00765000": (1.18, 1.22)}
 
 
 async def test_exits_still_fire_when_the_halt_file_exists(conn, tmp_path):
@@ -110,13 +115,16 @@ async def test_exit_signals_are_submitted_as_sell_orders(conn, tmp_path):
 
     await run.tick(conn, broker, now_utc=NOW, today=TODAY,
                    underlyings={"SPY": 750.0}, equity=100_000,
-                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT")
+                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
+                   quotes=EXIT_QUOTES)
 
     assert len(broker.orders) == 1
     order, dry_run = broker.orders[0]
     assert order["side"] == "sell"
     assert order["qty"] == "7"
     assert dry_run is True
+    # Stop-out sells at the live bid, not a limit near entry ($2.00).
+    assert float(order["limit_price"]) == pytest.approx(1.18)
 
 
 async def test_dry_run_is_the_default_for_the_tick(conn, tmp_path):
@@ -124,7 +132,8 @@ async def test_dry_run_is_the_default_for_the_tick(conn, tmp_path):
     broker = FakeBroker()
     await run.tick(conn, broker, now_utc=NOW, today=TODAY,
                    underlyings={"SPY": 750.0}, equity=100_000,
-                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT")
+                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
+                   quotes=EXIT_QUOTES)
     assert broker.orders[0][1] is True
 
 
@@ -133,7 +142,7 @@ async def test_closing_a_position_marks_it_closed_in_the_store(conn, tmp_path):
     await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
                    underlyings={"SPY": 750.0}, equity=100_000,
                    day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
-                   dry_run=False)
+                   dry_run=False, quotes=EXIT_QUOTES)
     assert store.open_positions(conn) == []
 
 
@@ -143,11 +152,55 @@ async def test_dry_run_does_not_mutate_position_state(conn, tmp_path):
     await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
                    underlyings={"SPY": 750.0}, equity=100_000,
                    day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
-                   dry_run=True)
+                   dry_run=True, quotes=EXIT_QUOTES)
     assert len(store.open_positions(conn)) == 1
 
 
-# --- the fallback decision function ----------------------------------------
+async def test_exit_without_a_live_quote_does_not_sell_at_entry_price(conn, tmp_path):
+    """NVDA live: missing premiums priced the sell at $7.50 (entry) after the
+    option had already collapsed. That order cannot fill. No quote → no order.
+    """
+    open_a_losing_position(conn)
+    broker = FakeBroker()
+    await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 750.0}, equity=100_000,
+                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
+                   dry_run=False)
+    assert broker.orders == []
+    assert len(store.open_positions(conn)) == 1
+    logged = store.recent_decisions(conn)
+    assert any(d["action"] == "exit_failed" and "no_quote" in d["detail"] for d in logged)
+
+
+async def test_premium_target_exits_when_underlying_has_not_hit_target(conn, tmp_path):
+    """+80% premium take-profit must work once live quotes are wired — this is
+    how equity can be locked without waiting for the underlying target.
+    """
+    store.open_position(conn, symbol="SPY260911C00765000",
+                        entry_ts="2026-08-24T14:05:00Z", **BASE)
+    broker = FakeBroker()
+    quotes = {"SPY260911C00765000": (3.70, 3.80)}  # mid 3.75 = +87.5% vs $2 entry
+    await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 767.0}, equity=100_000,
+                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
+                   quotes=quotes, dry_run=False)
+    assert store.open_positions(conn) == []
+    assert broker.orders[0][0]["side"] == "sell"
+    assert float(broker.orders[0][0]["limit_price"]) == pytest.approx(3.70)
+
+
+async def test_no_exit_order_after_the_options_close(conn, tmp_path):
+    open_a_losing_position(conn)
+    broker = FakeBroker()
+    # 20:30 UTC = 16:30 ET in August — options session is closed.
+    await run.tick(conn, broker, now_utc="2026-08-26T20:30:00Z", today=TODAY,
+                   underlyings={"SPY": 750.0}, equity=100_000,
+                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
+                   quotes=EXIT_QUOTES, dry_run=False)
+    assert broker.orders == []
+    assert len(store.open_positions(conn)) == 1
+    logged = store.recent_decisions(conn)
+    assert any(d["action"] == "exit_failed" and "session" in d["detail"] for d in logged)
 
 def test_pick_contract_targets_the_middle_of_the_delta_band():
     from agent import gates
@@ -293,7 +346,7 @@ async def test_tick_still_respects_gates_when_decide_says_enter(conn, tmp_path, 
 
 
 class UnfilledBroker(FakeBroker):
-    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None, **kw):
         self.orders.append((order, dry_run))
         if dry_run:
             return {"dry_run": True, "status": "simulated", "order": order}
@@ -338,7 +391,7 @@ class AbandonedWithAttemptsBroker(FakeBroker):
     """Both order attempts time out and get canceled - matches what
     execute.submit() actually returns when neither fill."""
 
-    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None, **kw):
         self.orders.append((order, dry_run))
         if dry_run:
             return {"dry_run": True, "status": "simulated", "order": order}
@@ -357,7 +410,7 @@ class FilledOnRetryBroker(FakeBroker):
     invisible to run.py - returning the shape submit() actually returns when
     the first attempt times out and the retry fills."""
 
-    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None, **kw):
         self.orders.append((order, dry_run))
         if dry_run:
             return {"dry_run": True, "status": "simulated", "order": order}

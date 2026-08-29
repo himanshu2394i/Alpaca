@@ -135,3 +135,23 @@ async def test_fetch_chain_stops_at_the_page_cap():
     sess = FakeSession(pages)
     await mcp_bridge.fetch_chain(sess, "SPY", "call", 3, 45, 700, 800, max_pages=4)
     assert len(sess.calls) == 4
+
+
+# --- option quote parsing ---------------------------------------------------
+
+def test_option_quote_reads_alpaca_bp_ap():
+    assert mcp_bridge.option_quote_bid_ask(
+        {"quote": {"bp": 3.10, "ap": 3.30}}
+    ) == (3.10, 3.30)
+
+
+def test_option_quote_reads_latest_quote_envelope():
+    assert mcp_bridge.option_quote_bid_ask(
+        {"latestQuote": {"bp": 1.0, "ap": 1.2}}
+    ) == (1.0, 1.2)
+
+
+def test_option_quote_rejects_a_one_sided_or_empty_book():
+    assert mcp_bridge.option_quote_bid_ask({"quote": {"bp": 0, "ap": 1.2}}) is None
+    assert mcp_bridge.option_quote_bid_ask({}) is None
+    assert mcp_bridge.option_quote_bid_ask({"error": "nope"}) is None
