@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 
 from agent import config, decide, exits, execute, gates, reconcile, screener, store
+from agent.indicators import _is_rth
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ async def tick(
     peak: float,
     halt_file: Path,
     premiums: dict[str, float] | None = None,
+    quotes: dict[str, tuple[float, float]] | None = None,
     symbols=None,
     dry_run: bool = True,
     decide_client=None,
@@ -93,7 +95,10 @@ async def tick(
     agent stays fully functional, and every other component stays testable,
     with no model in the picture at all.
     """
-    premiums = premiums or {}
+    premiums = dict(premiums or {})
+    quotes = dict(quotes or {})
+    for occ, (bid, ask) in quotes.items():
+        premiums[occ] = (bid + ask) / 2.0
     symbols = symbols or config.UNIVERSE
 
     halt_reason = None
@@ -109,12 +114,29 @@ async def tick(
     for signal in exit_signals:
         position = next(p for p in store.open_positions(conn)
                         if p["symbol"] == signal.symbol)
-        contract = _contract_for_exit(position, premiums.get(signal.symbol))
-        order = execute.build_order(contract, signal.qty, "sell", now_utc)
         log.info("EXIT %s: %s", signal.symbol, signal.reason)
         store.record_decision(conn, now_utc, signal.symbol, "exit", signal.reason)
+
+        if not _is_rth(now_utc):
+            store.record_decision(conn, now_utc, signal.symbol, "exit_failed",
+                                  "session closed; options not trading")
+            log.warning("exit skipped (session closed) for %s", signal.symbol)
+            continue
+
+        quote = quotes.get(signal.symbol)
+        if quote is None:
+            store.record_decision(conn, now_utc, signal.symbol, "exit_failed",
+                                  "no_quote; will not sell at entry price")
+            log.warning("exit skipped (no_quote) for %s", signal.symbol)
+            continue
+
+        bid, ask = quote
+        contract = _contract_for_exit(position, bid, ask)
+        # Sell at the live bid so a stop-out can actually fill (NVDA 2026-08-28).
+        order = execute.build_order(contract, signal.qty, "sell", now_utc,
+                                    retry=True)
         result = await broker.place(order, dry_run=dry_run, contract=contract,
-                                  ts_utc=now_utc)
+                                  ts_utc=now_utc, aggressive=True)
         if not dry_run:
             _log_attempts(conn, now_utc, signal.symbol, result)
         if not dry_run and result.get("status") == "filled":
@@ -241,19 +263,20 @@ def _entry_levels(candidate) -> tuple[float, float]:
     return exits.levels(candidate.price, candidate.adr, candidate.direction)
 
 
-def _contract_for_exit(position, premium: float | None) -> gates.Contract:
-    """Minimal Contract for pricing an exit.
+def _contract_for_exit(position, bid: float, ask: float) -> gates.Contract:
+    """Contract for pricing an exit from a live two-sided quote.
 
-    When the option has no quote, fall back to the entry price. The order is a
-    limit either way - a stale limit that does not fill is recoverable, a
-    market order into a wide spread is not.
+    Never invents a market from entry_price. A collapsed option sold at
+    yesterday's entry is unfillable; missing quotes are handled by the
+    caller before this runs.
     """
-    px = premium if premium and premium > 0 else position["entry_price"]
+    if bid <= 0 or ask <= 0:
+        raise ValueError(f"exit quote must be two-sided, got bid={bid} ask={ask}")
     underlying, expiry, right, strike = gates.parse_occ(position["symbol"])
     return gates.Contract(
         symbol=position["symbol"], underlying=underlying, expiry=expiry,
         right=right, strike=strike,
-        bid=round(px * 0.99, 2), ask=round(px * 1.01, 2),
+        bid=float(bid), ask=float(ask),
         delta=0.0, iv=0.0, prev_volume=0, day_volume=0,
     )
 
@@ -297,9 +320,35 @@ class MCPBroker:
         return await mcp_bridge.fetch_chain(self.sess, underlying, right,
                                             dte_lo, dte_hi, strike_lo, strike_hi)
 
-    async def place(self, order, dry_run=True, contract=None, ts_utc=None):
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None,
+                    aggressive=False):
         return await execute.submit(self.sess, order, dry_run=dry_run,
-                                    contract=contract, ts_utc=ts_utc)
+                                    contract=contract, ts_utc=ts_utc,
+                                    aggressive=aggressive)
+
+
+async def _option_quotes(sess, symbols: list[str]) -> dict[str, tuple[float, float]]:
+    """Live bid/ask for each OCC symbol. Missing quotes are omitted, never faked."""
+    from agent import mcp_bridge
+
+    out: dict[str, tuple[float, float]] = {}
+    for sym in symbols:
+        parsed = None
+        for args in ({"symbol": sym}, {"option_symbol": sym}):
+            try:
+                raw = await mcp_bridge.call(sess, "get_option_latest_quote", args)
+            except Exception:
+                log.warning("option quote failed for %s args=%s", sym, args,
+                            exc_info=True)
+                continue
+            parsed = mcp_bridge.option_quote_bid_ask(raw)
+            if parsed:
+                break
+        if parsed:
+            out[sym] = parsed
+        else:
+            log.warning("no two-sided quote for %s", sym)
+    return out
 
 
 async def _market_state(conn, sess, symbols):
@@ -360,8 +409,12 @@ async def loop(dry_run: bool = True, interval: int = 60, decide_client=None) -> 
                 peak = max(peak, equity)
                 store.record_equity(conn, now_utc, equity)
 
+                occ = [p["symbol"] for p in store.open_positions(conn)]
+                quotes = await _option_quotes(sess, occ) if occ else {}
+
                 result = await tick(conn, broker, now_utc, today, underlyings,
                                     equity, day_start, peak, halt_file,
+                                    quotes=quotes,
                                     dry_run=dry_run, decide_client=decide_client)
                 if result["exits"] or result["entries"]:
                     log.info("tick: %d exits, %d entries",

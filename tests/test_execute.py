@@ -195,6 +195,20 @@ async def test_submit_abandons_when_both_attempts_fail():
     assert result["status"] == "abandoned"
 
 
+async def test_aggressive_sell_places_once_at_the_bid():
+    """Stop-outs must not sit at mid for 60s then retry. One order at the bid."""
+    c = contract(bid=1.00, ask=1.40)
+    order = execute.build_order(c, 2, "sell", TS)
+    sess = FakeMCP(["filled"])
+    result = await execute.submit(sess, order, dry_run=False, contract=c,
+                                  ts_utc=TS, poll_seconds=0.1, poll_interval=0.01,
+                                  aggressive=True)
+    assert result["status"] == "filled"
+    placed = [c for c in sess.calls if c[0] == "place_option_order"]
+    assert len(placed) == 1
+    assert float(placed[0][1]["limit_price"]) == pytest.approx(1.00)
+
+
 # --- attempt trail -----------------------------------------------------------
 
 async def test_dry_run_includes_a_single_simulated_attempt():
