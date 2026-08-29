@@ -101,6 +101,43 @@ async def call(sess, name: str, args: dict) -> dict:
     return unwrap(result.content[0].text)
 
 
+def option_quote_bid_ask(payload: dict) -> tuple[float, float] | None:
+    """Extract a two-sided option quote, or None if the book is unusable.
+
+    Live exits must never invent a bid/ask from entry_price. A missing or
+    one-sided quote is a skip, not a fake market.
+    """
+    if not isinstance(payload, dict) or payload.get("error"):
+        return None
+
+    blobs: list = [
+        payload.get("quote"),
+        payload.get("latestQuote"),
+        payload.get("latest_quote"),
+        payload.get("data"),
+    ]
+    inner = payload.get("result")
+    if isinstance(inner, dict):
+        blobs.extend([inner, inner.get("quote"), inner.get("latestQuote")])
+    elif isinstance(inner, list) and inner and isinstance(inner[0], dict):
+        blobs.extend([inner[0], inner[0].get("quote"), inner[0].get("latestQuote")])
+    blobs.append(payload)
+
+    for q in blobs:
+        if not isinstance(q, dict):
+            continue
+        bid, ask = q.get("bp", q.get("bid_price", q.get("bid"))), q.get(
+            "ap", q.get("ask_price", q.get("ask"))
+        )
+        try:
+            bid_f, ask_f = float(bid), float(ask)
+        except (TypeError, ValueError):
+            continue
+        if bid_f > 0 and ask_f > 0:
+            return bid_f, ask_f
+    return None
+
+
 async def fetch_chain(sess, underlying: str, right: str, dte_lo: int, dte_hi: int,
                       strike_lo: float, strike_hi: float, max_pages: int = 12) -> dict:
     """Fetch a full option chain, following pagination.
