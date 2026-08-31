@@ -27,13 +27,13 @@ Use this before **Sep 4, 2026 20:30 IST** (End of Submissions).
 - [ ] Each post tags **lablab.ai** and **Alpaca** (`@lablabai` / `@AlpacaHQ` on X)
 - [ ] Paste links into submission — drafts in `docs/submission/SOCIAL_DRAFTS.md`
 
-## Day-of kickoff (28 Aug)
+## Day-of competition (31 Aug)
 
-- [ ] Attend kickoff / Discord Q&A
-- [ ] Create fresh $100k paper account
-- [ ] Rotate VM to competition keys; restart systemd units
+- [ ] Create fresh $100k paper account (you)
+- [ ] Run `python ops/competition_cutover.py --apply` on VM (wipes audit trail, keeps bars)
+- [ ] Put competition keys in VM `.env`; restart systemd units
 - [ ] Confirm dashboard + agent `dry_run=False` + equity ≈ 100000
-- [ ] First Build-in-Public post
+- [ ] Submit **Alpaca paper account ID** on lablab
 - [ ] **Freeze strategy logic** after cutover (tuning params only)
 
 ## Pre-submit smoke test
