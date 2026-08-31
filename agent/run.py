@@ -124,11 +124,20 @@ async def tick(
             continue
 
         quote = quotes.get(signal.symbol)
-        if quote is None:
+        if quote is None and not signal.forced:
             store.record_decision(conn, now_utc, signal.symbol, "exit_failed",
                                   "no_quote; will not sell at entry price")
             log.warning("exit skipped (no_quote) for %s", signal.symbol)
             continue
+        if quote is None:
+            # Forced (DTE cliff / competition end): skipping forever means the
+            # position rides to expiry untouched. A resting sell at a one-cent
+            # floor never invents a value - it only fills against a real buyer -
+            # but unlike skipping, it gives a stuck illiquid contract a chance
+            # to actually close instead of waiting on auto-exercise/expiration.
+            quote = (0.01, 0.01)
+            log.warning("forced exit with no quote for %s, trying $0.01 floor",
+                        signal.symbol)
 
         bid, ask = quote
         contract = _contract_for_exit(position, bid, ask)
@@ -328,22 +337,37 @@ class MCPBroker:
 
 
 async def _option_quotes(sess, symbols: list[str]) -> dict[str, tuple[float, float]]:
-    """Live bid/ask for each OCC symbol. Missing quotes are omitted, never faked."""
+    """Live bid/ask for each OCC symbol, in one batched call.
+
+    The tool's only accepted parameter is `symbols` (plural, comma-separated,
+    up to 100) - verified against the live tool schema on 2026-08-31. Earlier
+    per-symbol calls sent {"symbol": sym} / {"option_symbol": sym}, both of
+    which the server rejects with a 400, so this had never actually returned a
+    quote in production. The response nests results as {"quotes": {sym: {...}}},
+    not at the top level, which is why each symbol's inner dict - not the
+    envelope - gets handed to option_quote_bid_ask. Missing quotes are
+    omitted, never faked.
+    """
     from agent import mcp_bridge
+
+    if not symbols:
+        return {}
+
+    try:
+        raw = await mcp_bridge.call(sess, "get_option_latest_quote",
+                                    {"symbols": ",".join(symbols)})
+    except Exception:
+        log.warning("option quote batch failed for %s", symbols, exc_info=True)
+        return {}
+
+    quotes = raw.get("quotes") if isinstance(raw, dict) else None
+    if not isinstance(quotes, dict):
+        log.warning("no quotes in option quote response for %s", symbols)
+        return {}
 
     out: dict[str, tuple[float, float]] = {}
     for sym in symbols:
-        parsed = None
-        for args in ({"symbol": sym}, {"option_symbol": sym}):
-            try:
-                raw = await mcp_bridge.call(sess, "get_option_latest_quote", args)
-            except Exception:
-                log.warning("option quote failed for %s args=%s", sym, args,
-                            exc_info=True)
-                continue
-            parsed = mcp_bridge.option_quote_bid_ask(raw)
-            if parsed:
-                break
+        parsed = mcp_bridge.option_quote_bid_ask(quotes.get(sym, {}))
         if parsed:
             out[sym] = parsed
         else:

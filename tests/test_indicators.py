@@ -77,3 +77,17 @@ def test_rvol_detects_a_volume_spike():
 def test_rvol_returns_zero_without_prior_history():
     bars = rows(make_bars(n=10))
     assert indicators.rvol(bars, session_date="2026-08-24") == 0.0
+
+
+def test_is_rth_true_during_session_hours_on_a_weekday():
+    assert indicators._is_rth("2026-08-26T14:05:00Z")  # Wed, 10:05 ET
+
+
+def test_is_rth_false_on_a_saturday_at_the_same_clock_time():
+    # Same 09:30-16:00 ET window, but 2026-08-29 is a Saturday - the market
+    # is closed regardless of clock time.
+    assert not indicators._is_rth("2026-08-29T14:05:00Z")
+
+
+def test_is_rth_false_on_a_sunday_at_the_same_clock_time():
+    assert not indicators._is_rth("2026-08-30T14:05:00Z")
