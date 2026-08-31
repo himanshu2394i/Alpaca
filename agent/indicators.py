@@ -83,11 +83,17 @@ TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 @lru_cache(maxsize=200_000)
 def _is_rth(ts_utc: str) -> bool:
-    """True if the timestamp falls inside 09:30-16:00 America/New_York.
+    """True if the timestamp falls inside 09:30-16:00 America/New_York on a weekday.
 
     Converts through zoneinfo rather than assuming a fixed UTC offset: 09:30 ET
     is 13:30Z in summer and 14:30Z in winter, and the competition straddles no
     DST boundary but the code should not quietly break in November.
+
+    Weekday-only, not holiday-aware: the loop runs 24/7 and this clock check
+    alone would say "open" at 11am ET on a Saturday. A market holiday would
+    still slip through - not fetched here since none falls inside the 31 Aug -
+    4 Sep competition week (ponytail: wire agent.mcp_bridge's get_calendar if
+    this needs to hold outside that window).
 
     Cached because the screener re-filters the same bars every time it runs:
     strptime plus a timezone conversion per bar per call is the difference
@@ -95,7 +101,7 @@ def _is_rth(ts_utc: str) -> bool:
     exactly, so the hit rate is near 100%.
     """
     t = datetime.strptime(ts_utc, TS_FMT).replace(tzinfo=timezone.utc).astimezone(ET)
-    return RTH_OPEN <= t.time() < RTH_CLOSE
+    return t.weekday() < 5 and RTH_OPEN <= t.time() < RTH_CLOSE
 
 
 def rth_bars(bars: Sequence[dict]) -> list[dict]:
