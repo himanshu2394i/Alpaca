@@ -40,6 +40,19 @@ def test_supertrend_is_bullish_on_a_strong_uptrend():
     assert closes[-1] > st["value"]
 
 
+def test_supertrend_resolves_a_real_direction_when_price_never_crosses_a_band():
+    """A fully flat series never crosses final_upper or final_lower, so every
+    bar hits the carry-forward branch: direction.iloc[i] = direction.iloc[i-1].
+    pd.Series(index=..., dtype=int) with no data actually initializes as
+    float64 NaN (dtype=int is not honored without data), and the carry-forward
+    chain never gets a real +-1 to inherit - it's NaN all the way to the last
+    bar, where int(nan) raises instead of returning a direction.
+    """
+    closes = [100.0] * 40
+    st = indicators.supertrend(rows_from_closes(closes), period=10, multiplier=3)
+    assert st["direction"] in (1, -1)  # not NaN - int(nan) would raise first
+
+
 def test_mtf_rejects_a_call_when_price_is_below_the_200_ema_on_15m():
     """Enough RTH history for EMA200, but entry price sits below the slow EMA."""
     bars = _many_rth_sessions(n_sessions=25, base=100.0, step=0.05)

@@ -249,7 +249,12 @@ def supertrend(bars: Sequence[dict], period: int = 10,
 
     final_upper = basic_upper.copy()
     final_lower = basic_lower.copy()
-    direction = pd.Series(index=df.index, dtype=int)
+    # pd.Series(index=..., dtype=int) with no data silently becomes float64 NaN
+    # (int can't hold NaN, so pandas upcasts) - a neutral start that never gets
+    # overwritten by a real crossing then carries NaN all the way to the last
+    # bar, where int(NaN) raises. Seeding a real int default up front means the
+    # carry-forward branch always has a valid value to inherit.
+    direction = pd.Series(1, index=df.index, dtype=int)
 
     for i in range(1, len(df)):
         if basic_upper.iloc[i] < final_upper.iloc[i - 1] or df["c"].iloc[i - 1] > final_upper.iloc[i - 1]:
@@ -268,9 +273,6 @@ def supertrend(bars: Sequence[dict], period: int = 10,
             direction.iloc[i] = -1
         else:
             direction.iloc[i] = direction.iloc[i - 1]
-
-    if pd.isna(direction.iloc[0]):
-        direction.iloc[0] = 1
 
     last_dir = int(direction.iloc[-1])
     st_val = float(final_lower.iloc[-1] if last_dir == 1 else final_upper.iloc[-1])
