@@ -172,6 +172,31 @@ async def test_exit_without_a_live_quote_does_not_sell_at_entry_price(conn, tmp_
     assert any(d["action"] == "exit_failed" and "no_quote" in d["detail"] for d in logged)
 
 
+async def test_forced_exit_with_no_quote_tries_a_penny_floor_instead_of_giving_up(
+    conn, tmp_path
+):
+    """A discretionary exit with no quote should skip (existing behavior,
+    covered above). A forced one - DTE cliff or competition end - cannot: the
+    position rides all the way to expiry/auto-exercise if it just keeps
+    skipping forever. Resting a sell at a one-cent floor still never invents
+    a value, but gives a stuck illiquid contract a chance to actually close.
+    """
+    store.open_position(conn, symbol="SPY260827C00765000",
+                        entry_ts="2026-08-24T14:05:00Z",
+                        **{**BASE, "expiry": "2026-08-27"})  # dte 1, forced
+    broker = FakeBroker()
+    await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 750.0}, equity=100_000,
+                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
+                   dry_run=False)
+
+    assert len(broker.orders) == 1
+    order, dry_run = broker.orders[0]
+    assert order["side"] == "sell"
+    assert float(order["limit_price"]) == pytest.approx(0.01)
+    assert store.open_positions(conn) == []  # FakeBroker fills it
+
+
 async def test_premium_target_exits_when_underlying_has_not_hit_target(conn, tmp_path):
     """+80% premium take-profit must work once live quotes are wired — this is
     how equity can be locked without waiting for the underlying target.
@@ -201,6 +226,36 @@ async def test_no_exit_order_after_the_options_close(conn, tmp_path):
     assert len(store.open_positions(conn)) == 1
     logged = store.recent_decisions(conn)
     assert any(d["action"] == "exit_failed" and "session" in d["detail"] for d in logged)
+
+
+async def test_option_quotes_sends_the_plural_symbols_param_in_one_call(monkeypatch):
+    """The live MCP server rejects {"symbol": ...} and {"option_symbol": ...}
+    with a 400 - only {"symbols": "a,b,..."} is accepted (verified against the
+    real tool schema 2026-08-31). One call for every open position, not one
+    call per position.
+    """
+    seen_calls = []
+
+    async def fake_call(sess, name, args):
+        seen_calls.append((name, args))
+        return {"quotes": {
+            "SPY260911C00765000": {"bp": 1.18, "ap": 1.22},
+            "AAPL260911P00200000": {"bp": 0.0, "ap": 0.0},  # dead book
+        }}
+
+    import agent.mcp_bridge as mcp_bridge_module
+    monkeypatch.setattr(mcp_bridge_module, "call", fake_call)
+
+    result = await run._option_quotes(
+        object(), ["SPY260911C00765000", "AAPL260911P00200000", "MSFT260911C00500000"]
+    )
+
+    assert len(seen_calls) == 1
+    name, args = seen_calls[0]
+    assert name == "get_option_latest_quote"
+    assert args == {"symbols": "SPY260911C00765000,AAPL260911P00200000,MSFT260911C00500000"}
+    assert result == {"SPY260911C00765000": (1.18, 1.22)}  # dead book and missing symbol omitted
+
 
 def test_pick_contract_targets_the_middle_of_the_delta_band():
     from agent import gates
