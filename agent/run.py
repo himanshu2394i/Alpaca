@@ -186,6 +186,9 @@ async def tick(
         open_now2 = store.open_positions(conn)
         deployed = sum(p["entry_price"] * p["qty"] * gates.CONTRACT_MULTIPLIER
                        for p in open_now2)
+        open_underlyings: dict[str, int] = {}
+        for p in open_now2:
+            open_underlyings[p["underlying"]] = open_underlyings.get(p["underlying"], 0) + 1
 
         if decide_client is not None:
             viable = [c for c in parsed if gates.viable(c, today) is None]
@@ -211,7 +214,8 @@ async def tick(
         qty = gates.size_contracts(equity, contract.ask)
         blocked = gates.approve(contract, qty, equity, deployed,
                                 len(open_now2),
-                                now_et=_et_hhmm(now_utc), today=today)
+                                now_et=_et_hhmm(now_utc), today=today,
+                                open_underlyings=open_underlyings)
         if blocked:
             log.info("gate rejected %s: %s", contract.symbol, blocked)
             store.record_decision(conn, now_utc, contract.symbol, "rejected", blocked)

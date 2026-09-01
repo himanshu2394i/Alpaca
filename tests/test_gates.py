@@ -211,6 +211,27 @@ def test_approve_blocks_a_zero_quantity():
     assert r is not None and "quantity" in r
 
 
+def test_approve_blocks_a_second_entry_in_an_already_open_underlying():
+    """Live 2026-09-01: AAPL had one open position; the screener re-nominated
+    AAPL, decide() picked a viable contract (nothing here stopped it), and the
+    order filled for real - store.open_position() then rejected the duplicate
+    row and crashed the tick, leaving 3 broker-side contracts with zero local
+    tracking or exit protection. gates.approve() must catch this before the
+    order is ever placed, not after the fill.
+    """
+    r = gates.approve(one(), qty=10, equity=100_000, deployed=0,
+                      open_positions=1, now_et="11:00", today=TODAY,
+                      open_underlyings={"SPY": 1})
+    assert r is not None and "SPY" in r and "already has" in r
+
+
+def test_approve_allows_a_different_underlying_while_one_is_open():
+    r = gates.approve(one(), qty=10, equity=100_000, deployed=0,
+                      open_positions=1, now_et="11:00", today=TODAY,
+                      open_underlyings={"MSFT": 1})
+    assert r is None
+
+
 def test_approve_rechecks_contract_viability():
     # An unviable contract must not slip through just because sizing is fine.
     r = gates.approve(one(prev_vol=3), qty=10, equity=100_000, deployed=0,
