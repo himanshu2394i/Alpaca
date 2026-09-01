@@ -751,8 +751,8 @@ The hackathon requires a **fresh $100,000 paper account**, with the agent tradin
 from **Monday 31 August, 09:30 ET**. Equity is snapshotted **EOD Thursday
 3 September**, including exercises and assignments for options expiring that day.
 
-Do not use the pre-kickoff development account. Cutover is a manual, human step — see
-`tasks.md` (H1–H3).
+Do not use the pre-kickoff development account. Cutover is a manual, human step
+handled via `ops/competition_cutover.py`.
 
 ---
 
@@ -899,11 +899,6 @@ Not yet implemented here.
 |---|---|
 | Rules & API reference | [`docs/ALPACA_HACKATHON_REFERENCE.md`](docs/ALPACA_HACKATHON_REFERENCE.md) |
 | One-page write-up | [`docs/submission/ONE_PAGER.md`](docs/submission/ONE_PAGER.md) |
-| Submit checklist | [`docs/submission/CHECKLIST.md`](docs/submission/CHECKLIST.md) |
-| Social post drafts | [`docs/submission/SOCIAL_DRAFTS.md`](docs/submission/SOCIAL_DRAFTS.md) |
-| Demo / slides outline | [`docs/submission/DEMO_OUTLINE.md`](docs/submission/DEMO_OUTLINE.md) |
-| Design spec | [`docs/superpowers/specs/2026-08-23-alpaca-options-agent-design.md`](docs/superpowers/specs/2026-08-23-alpaca-options-agent-design.md) |
-| Coordination board | [`tasks.md`](tasks.md) |
 
 ---
 
