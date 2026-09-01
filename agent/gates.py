@@ -24,6 +24,7 @@ RISK = {
     "max_spread_pct":   0.10,     # bid-ask as a fraction of mid
     "delta_range":      (0.35, 0.55),
     "stale_bars_sec":   300,      # no bars for 5 min during RTH -> halt entries
+    "max_per_underlying": 1,      # never hold two positions in the same underlying
 }
 
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
@@ -199,6 +200,7 @@ def approve(
     open_positions: int,
     now_et: str,
     today: str,
+    open_underlyings: dict[str, int] | None = None,
     risk: dict = RISK,
 ) -> str | None:
     """Final check before an order is sent. Returns a rejection reason or None.
@@ -206,6 +208,14 @@ def approve(
     Re-runs contract viability rather than trusting an earlier pass: the chain
     may have moved between nomination and execution, and this is the last point
     at which a bad fill can still be prevented.
+
+    Live 2026-09-01: a second AAPL 330C entry was approved and filled while the
+    first was still open, because nothing here checked for that. The broker
+    happily filled it - Alpaca has no objection to buying more of a symbol you
+    already hold - but store.open_position() then rejected the duplicate row,
+    crashing that tick after the money had already been spent. The fill was
+    real; the local tracking was not, so exits.scan() never saw it. Caught
+    here, before the order is placed, not after.
     """
     if qty <= 0:
         return f"quantity {qty} is not tradeable"
@@ -224,5 +234,10 @@ def approve(
 
     if open_positions >= risk["max_concurrent"]:
         return f"{open_positions} open positions (cap {risk['max_concurrent']})"
+
+    held = (open_underlyings or {}).get(contract.underlying, 0)
+    if held >= risk["max_per_underlying"]:
+        return (f"{contract.underlying} already has {held} open position(s) "
+                f"(cap {risk['max_per_underlying']})")
 
     return None
