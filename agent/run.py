@@ -150,9 +150,19 @@ async def tick(
             _log_attempts(conn, now_utc, signal.symbol, result)
         if not dry_run and result.get("status") == "filled":
             px = result.get("fill_price", contract.mid)
+            # A partial fill (remainder canceled) still reports status
+            # "filled" - the row still closes locally rather than leaving
+            # exits.scan() re-sell the ORIGINAL qty next tick against a
+            # position the broker no longer fully holds; reconcile() picks up
+            # any true remainder at the next boot. The record must say it was
+            # partial rather than read as a clean full close.
+            filled = result.get("filled_qty", signal.qty)
+            reason = signal.reason
+            if filled < signal.qty:
+                reason = f"{reason} (partial fill {filled:g}/{signal.qty}, remainder canceled)"
             store.close_position(conn, signal.symbol,
                                  exit_price=px, exit_ts=now_utc,
-                                 exit_reason=signal.reason)
+                                 exit_reason=reason)
         elif not dry_run and result.get("status") != "filled":
             # Failing to close a position costs money, unlike failing to open
             # one - this must land in the decision log, not only a python
@@ -236,11 +246,16 @@ async def tick(
                                   detail, thesis)
             entries.append((candidate, contract, qty))
             if not dry_run and status == "filled":
+                # The account only ever holds what the broker actually filled,
+                # never the requested qty - a partial fill whose remainder
+                # gets canceled still reports status "filled" (see
+                # execute._attempt), just with fewer contracts than asked for.
+                filled = result.get("filled_qty", qty)
                 fill_px = result.get("fill_price", contract.ask)
                 stop, target = _entry_levels(candidate)
                 store.open_position(
                     conn, symbol=contract.symbol, underlying=candidate.symbol,
-                    right=candidate.direction, qty=qty, entry_price=fill_px,
+                    right=candidate.direction, qty=filled, entry_price=fill_px,
                     entry_ts=now_utc, entry_underlying=candidate.price,
                     stop_underlying=stop, target_underlying=target,
                     expiry=contract.expiry,

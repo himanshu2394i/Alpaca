@@ -130,10 +130,19 @@ async def _attempt(sess, order: dict, contract: Contract, poll_seconds: float,
 
     polled = await _poll_fill(sess, order["client_order_id"], poll_seconds,
                             poll_interval)
-    if polled and is_filled(polled):
+    # Gate on filled_qty, not is_filled(): a broker that fills part of the
+    # order and cancels the rest reports terminal status "canceled", the same
+    # as a true zero-fill cancel - "partially_filled" only describes a still-
+    # open order. is_filled() would call that "unfilled", the caller would
+    # retry for the FULL original qty on top of a real partial fill already
+    # in the account, and open_position() would then reject the second entry
+    # into the same symbol the same way the duplicate-underlying incident did.
+    qty = filled_qty(polled) if polled else 0.0
+    if polled and qty > 0:
         fallback = float(order["limit_price"])
         return {"dry_run": False, "status": "filled", "order": order,
-                "fill_price": fill_price(polled, fallback), "result": polled}
+                "fill_price": fill_price(polled, fallback),
+                "filled_qty": qty, "result": polled}
 
     await _cancel(sess, polled or placed)
     return {"dry_run": False, "status": "unfilled", "order": order}

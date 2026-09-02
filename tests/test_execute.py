@@ -257,3 +257,63 @@ async def test_filled_status_with_zero_filled_qty_is_not_a_fill():
                               "filled_avg_price": "1.62"}) is True
     assert execute.is_filled({"status": "partially_filled", "filled_qty": "1",
                               "filled_avg_price": "1.62"}) is True
+
+
+# --- partial fill whose remainder gets canceled ------------------------------
+#
+# A broker that fills 3 of 7 and cancels the rest reports terminal status
+# "canceled" - "partially_filled" describes a still-open order, not the end
+# state. That status is in DEAD, so polling correctly stops, but is_filled()
+# only checks FILLED statuses and misses it entirely: real contracts traded,
+# and the caller must not treat this as "nothing happened".
+
+class PartialFillMCP:
+    """A broker that partially fills an order, then cancels the remainder."""
+
+    def __init__(self, filled_qty, filled_price):
+        self.filled_qty, self.filled_price = filled_qty, filled_price
+        self.calls = []
+
+    async def call_tool(self, name, args):
+        import json
+        self.calls.append((name, args))
+        if name == "place_option_order":
+            data = {"id": "ord-1", "status": "new",
+                    "client_order_id": args["client_order_id"]}
+        elif name == "get_order_by_client_id":
+            data = {"id": "ord-1", "status": "canceled",
+                    "filled_qty": self.filled_qty,
+                    "filled_avg_price": self.filled_price}
+        elif name == "cancel_order_by_id":
+            data = {"id": args["order_id"], "status": "canceled"}
+        else:
+            raise AssertionError(f"unexpected tool {name}")
+        return type("R", (), {"content": [type("C", (), {"text": json.dumps(data)})()]})()
+
+
+async def test_aggressive_exit_partial_fill_then_cancel_is_reported_as_a_fill():
+    """A stop-out that fills 3 of 6 and cancels the rest must not come back
+    as abandoned - real money moved and the caller must know how much."""
+    c = contract(bid=1.00, ask=1.40)
+    order = execute.build_order(c, 6, "sell", TS)
+    sess = PartialFillMCP(filled_qty="3", filled_price="1.20")
+    result = await execute.submit(sess, order, dry_run=False, contract=c,
+                                  ts_utc=TS, poll_seconds=0.1, poll_interval=0.01,
+                                  aggressive=True)
+    assert result["status"] == "filled"
+    assert result["filled_qty"] == pytest.approx(3.0)
+    assert result["fill_price"] == pytest.approx(1.20)
+
+
+async def test_entry_partial_fill_then_cancel_does_not_retry_for_the_full_qty():
+    """A partial fill must be terminal, not trigger a second full-size order -
+    a second open_position() call for the same symbol in one tick is exactly
+    the duplicate-fill failure mode this project already hit once live."""
+    order = execute.build_order(contract(), 7, "buy", TS)
+    sess = PartialFillMCP(filled_qty="4", filled_price="1.55")
+    result = await execute.submit(sess, order, dry_run=False, contract=contract(),
+                                  ts_utc=TS, poll_seconds=0.1, poll_interval=0.01)
+    assert result["status"] == "filled"
+    assert result["filled_qty"] == pytest.approx(4.0)
+    placed = [c for c in sess.calls if c[0] == "place_option_order"]
+    assert len(placed) == 1  # no retry after a real (partial) fill

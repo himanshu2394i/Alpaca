@@ -523,6 +523,85 @@ async def test_live_fill_on_retry_still_logs_the_canceled_first_attempt(
     assert len(store.open_positions(conn)) == 1
 
 
+# --- partial fill whose remainder gets canceled ------------------------------
+#
+# execute.submit() can report status "filled" with a filled_qty smaller than
+# the order actually requested - a broker that fills 4 of 7 and cancels the
+# rest. The requested qty and the actual qty must never be conflated: opening
+# a position sized at the request, when only part of it filled, records
+# contracts the account does not hold.
+
+class PartialFillEntryBroker(FakeBroker):
+    """Fills fewer contracts than requested; remainder was canceled upstream."""
+
+    def __init__(self, filled_qty, chain=None):
+        super().__init__(chain)
+        self.filled_qty = filled_qty
+
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None, **kw):
+        self.orders.append((order, dry_run))
+        if dry_run:
+            return {"dry_run": True, "status": "simulated", "order": order}
+        return {"dry_run": False, "status": "filled",
+               "fill_price": float(order["limit_price"]),
+               "filled_qty": self.filled_qty}
+
+
+async def test_live_partial_fill_entry_records_the_actual_filled_qty(
+        conn, tmp_path, monkeypatch):
+    seed_fresh_bars(conn)
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = PartialFillEntryBroker(
+        filled_qty=4, chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+
+    await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                   underlyings={}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT", dry_run=False)
+
+    positions = store.open_positions(conn)
+    assert len(positions) == 1
+    requested_qty = int(broker.orders[0][0]["qty"])
+    assert requested_qty > 4, "test is only meaningful if the fill was partial"
+    assert positions[0]["qty"] == 4
+
+
+class PartialFillExitBroker(FakeBroker):
+    """Sells fewer contracts than the position holds; remainder was canceled."""
+
+    def __init__(self, filled_qty, chain=None):
+        super().__init__(chain)
+        self.filled_qty = filled_qty
+
+    async def place(self, order, dry_run=True, contract=None, ts_utc=None, **kw):
+        self.orders.append((order, dry_run))
+        if dry_run:
+            return {"dry_run": True, "status": "simulated", "order": order}
+        return {"dry_run": False, "status": "filled",
+               "fill_price": float(order["limit_price"]),
+               "filled_qty": self.filled_qty}
+
+
+async def test_live_partial_fill_exit_is_not_silently_marked_a_clean_close(
+        conn, tmp_path):
+    # BASE opens 7 contracts; only part of the stop-out actually sells before
+    # the remainder is canceled. The row still closes locally (closing beats
+    # leaving exits.scan() re-selling the ORIGINAL qty next tick, which the
+    # broker no longer fully holds - reconcile() picks up any true remainder
+    # at next boot), but the record must say it was partial, not clean.
+    open_a_losing_position(conn)
+    broker = PartialFillExitBroker(filled_qty=3)
+
+    await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 750.0}, equity=100_000,
+                   day_start=100_000, peak=100_000, halt_file=tmp_path / "HALT",
+                   dry_run=False, quotes=EXIT_QUOTES)
+
+    assert store.open_positions(conn) == []
+    closed = store.closed_positions(conn)
+    assert len(closed) == 1
+    assert "3" in closed[0]["exit_reason"] and "7" in closed[0]["exit_reason"]
+
+
 # --- session bounds persist across a restart --------------------------------
 #
 # loop() used to set day_start = peak = equity fresh on every process boot.
