@@ -107,6 +107,11 @@ async def tick(
     else:
         halt_reason = gates.halt_reason(equity, day_start, peak)
         if halt_reason is None:
+            # A passed deadline must stop entries too, not only force exits -
+            # otherwise the screener re-opens every tick what the next tick
+            # force-sells (the 2026-09-04 SMCI buy/sell loop).
+            halt_reason = exits.competition_over_reason(today)
+        if halt_reason is None:
             halt_reason = gates.data_stale_reason(store.newest_bar_ts(conn), now_utc)
 
     # --- exits first, and regardless of any halt --------------------------

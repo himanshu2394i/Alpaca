@@ -531,6 +531,33 @@ async def test_live_fill_on_retry_still_logs_the_canceled_first_attempt(
 # a position sized at the request, when only part of it filled, records
 # contracts the account does not hold.
 
+async def test_entries_are_blocked_once_the_competition_deadline_passes(
+        conn, tmp_path, monkeypatch):
+    """The 2026-09-04 buy/sell loop.
+
+    The deadline force-exited every open position on every tick, but nothing
+    stopped the screener from opening a fresh one on the next tick, which the
+    tick after that force-exited again. SMCI was bought and sold 21 times in a
+    single morning, donating the bid-ask spread on every round trip. A passed
+    deadline has to read as a halt: exits keep running, entries stop.
+    """
+    seed_fresh_bars(conn)
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    monkeypatch.setitem(exits.EXIT, "competition_end", TODAY)
+    broker = FakeBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+
+    result = await run.tick(conn, broker, now_utc=NOW, today=TODAY,
+                            underlyings={}, equity=100_000, day_start=100_000,
+                            peak=100_000, halt_file=tmp_path / "HALT",
+                            dry_run=False)
+
+    assert result["halted"] is True
+    assert "competition" in result["halt_reason"]
+    assert result["entries"] == []
+    assert store.open_positions(conn) == []
+    assert broker.orders == [], "no entry order may be placed after the deadline"
+
+
 class PartialFillEntryBroker(FakeBroker):
     """Fills fewer contracts than requested; remainder was canceled upstream."""
 

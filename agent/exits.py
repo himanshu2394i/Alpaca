@@ -15,7 +15,10 @@ EXIT = {
     "premium_stop_pct":   -0.40,   # give back 40% of premium -> out
     "premium_target_pct":  0.80,   # +80% -> take it
     "min_dte":             2,      # never hold into the gamma cliff
-    "competition_end":    "2026-09-04",
+    # A date here means "flatten and stop trading from this day on". None means
+    # no deadline. Set back to a date only for another timed competition -
+    # while it is set, entries are blocked too (see competition_over_reason).
+    "competition_end":     None,
 }
 
 
@@ -43,6 +46,27 @@ def levels(entry_underlying: float, adr: float, right: str,
     return entry_underlying + stop_mult * adr, entry_underlying - target_mult * adr
 
 
+def competition_over_reason(today: str, rules: dict = EXIT) -> str | None:
+    """Why new entries are closed because the deadline has passed, or None.
+
+    The forced exit in check() is only half a kill switch. Live 2026-09-04 it
+    force-exited every open position on every tick - and nothing stopped the
+    screener from opening a fresh one on the very next tick, which the tick
+    after that force-exited again. SMCI was bought and sold 21 times in one
+    morning, donating the bid-ask spread on every round trip, for -$869 on
+    that contract alone.
+
+    Blocking entries is the other half, and it belongs in the halt path rather
+    than the gates: a halt stops entries while exits keep running, which is
+    exactly "flatten and stop" - the behaviour the deadline was always meant
+    to have.
+    """
+    end = rules.get("competition_end")
+    if end and today >= end:
+        return f"competition ended {end}; entries closed, exits still running"
+    return None
+
+
 def _dte(expiry: str, today: str) -> int:
     return (date.fromisoformat(expiry) - date.fromisoformat(today)).days
 
@@ -59,8 +83,9 @@ def check(position, underlying: float | None, premium: float | None,
         return ExitSignal(symbol=symbol, qty=qty, reason=reason, forced=forced)
 
     # --- forced, checked first ---------------------------------------------
-    if today >= rules["competition_end"]:
-        return signal(f"competition ends {rules['competition_end']}", forced=True)
+    end = rules.get("competition_end")
+    if end and today >= end:
+        return signal(f"competition ends {end}", forced=True)
 
     dte = _dte(position["expiry"], today)
     if dte <= rules["min_dte"]:

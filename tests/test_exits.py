@@ -84,9 +84,35 @@ def test_expiry_forces_an_exit_inside_two_days():
 
 
 def test_competition_end_forces_an_exit():
+    rules = {**exits.EXIT, "competition_end": "2026-09-04"}
     sig = exits.check(pos(expiry="2026-10-16"), underlying=767.0, premium=2.10,
-                      today="2026-09-04")
+                      today="2026-09-04", rules=rules)
     assert sig is not None and sig.forced and "competition" in sig.reason
+
+
+def test_no_competition_deadline_means_no_forced_exit():
+    """With no deadline configured the rule is inert - a healthy position is
+    held on its own merits, not flattened by a date that no longer applies."""
+    rules = {**exits.EXIT, "competition_end": None}
+    assert exits.check(pos(expiry="2026-10-16"), underlying=767.0, premium=2.10,
+                       today="2026-09-04", rules=rules) is None
+
+
+def test_a_passed_deadline_also_blocks_entries():
+    """The forced exit alone is only half a kill switch.
+
+    Live 2026-09-04: the deadline force-exited every position each tick, but
+    nothing stopped the screener re-opening one on the next tick, which the
+    tick after that force-exited again. SMCI was bought and sold 21 times in a
+    morning, donating the bid-ask spread every round trip. Blocking entries is
+    the other half - and it must read as a halt, so exits keep running.
+    """
+    rules = {**exits.EXIT, "competition_end": "2026-09-04"}
+    assert exits.competition_over_reason("2026-09-03", rules) is None
+    assert exits.competition_over_reason("2026-09-04", rules) is not None
+    assert exits.competition_over_reason("2026-09-05", rules) is not None
+    assert exits.competition_over_reason("2026-09-05",
+                                         {**exits.EXIT, "competition_end": None}) is None
 
 
 def test_forced_exit_outranks_a_healthy_position():
