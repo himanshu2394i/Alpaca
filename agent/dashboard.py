@@ -16,6 +16,42 @@ from agent import config, store
 
 CONTRACT_MULTIPLIER = 100
 
+COMPETITION = {
+    "start": "2026-08-31",       # first session of the official P&L window
+    "end": "2026-09-03",         # EOD Thursday - the judged equity snapshot
+    "start_equity": 100_000.0,
+}
+"""The window that was actually scored.
+
+The agent keeps trading after the window closes, so the live cards on their own
+misrepresent the judged result. Both are shown, each labelled - the scored
+numbers lead, the live ones sit underneath. Nothing is filtered out of the
+tables; post-window rows are separated rather than hidden.
+"""
+
+
+def competition_summary(conn: sqlite3.Connection, window: dict = COMPETITION) -> dict:
+    """The judged numbers: equity at the snapshot, and trades closed inside it."""
+    rows = [r for r in store.equity_series(conn, limit=20000)
+            if r["ts_utc"][:10] <= window["end"]]
+    final = float(rows[-1]["value"]) if rows else window["start_equity"]
+
+    closed = [p for p in store.closed_positions(conn)
+              if p["exit_ts"] and p["exit_ts"][:10] <= window["end"]
+              and p["exit_price"] is not None]
+    realised = sum((p["exit_price"] - p["entry_price"]) * p["qty"] * CONTRACT_MULTIPLIER
+                   for p in closed)
+    wins = sum(1 for p in closed if p["exit_price"] > p["entry_price"])
+
+    return {
+        "equity": final,
+        "pnl": final - window["start_equity"],
+        "pct": (final - window["start_equity"]) / window["start_equity"],
+        "closed": len(closed),
+        "realised": realised,
+        "win_rate": (wins / len(closed)) if closed else None,
+    }
+
 
 def summary(conn: sqlite3.Connection) -> dict:
     """Headline numbers for the top of the page."""
@@ -76,7 +112,9 @@ def render(conn: sqlite3.Connection) -> str:
     """The whole page. Every database value is escaped: thesis and detail text
     is model-written, and must never be able to become markup."""
     s = summary(conn)
+    comp = competition_summary(conn)
     wr = f"{s['win_rate']:.0%}" if s["win_rate"] is not None else "-"
+    comp_wr = f"{comp['win_rate']:.0%}" if comp["win_rate"] is not None else "-"
 
     open_rows = [
         (p["symbol"], p["underlying"], p["right"], p["qty"], f"{p['entry_price']:.2f}",
@@ -84,14 +122,21 @@ def render(conn: sqlite3.Connection) -> str:
          p["expiry"], p["thesis"])
         for p in store.open_positions(conn)
     ]
-    closed_rows = [
-        (p["symbol"], p["qty"], f"{p['entry_price']:.2f}",
-         f"{p['exit_price']:.2f}" if p["exit_price"] is not None else "-",
-         f"{(p['exit_price'] - p['entry_price']) * p['qty'] * CONTRACT_MULTIPLIER:+,.0f}"
-         if p["exit_price"] is not None else "-",
-         p["exit_reason"] or "-")
-        for p in store.closed_positions(conn)
-    ]
+
+    def _closed_row(p):
+        return (p["symbol"], p["qty"], f"{p['entry_price']:.2f}",
+                f"{p['exit_price']:.2f}" if p["exit_price"] is not None else "-",
+                f"{(p['exit_price'] - p['entry_price']) * p['qty'] * CONTRACT_MULTIPLIER:+,.0f}"
+                if p["exit_price"] is not None else "-",
+                p["exit_reason"] or "-")
+
+    all_closed = store.closed_positions(conn)
+    in_window = [p for p in all_closed
+                 if p["exit_ts"] and p["exit_ts"][:10] <= COMPETITION["end"]]
+    after = [p for p in all_closed
+             if not (p["exit_ts"] and p["exit_ts"][:10] <= COMPETITION["end"])]
+    closed_rows = [_closed_row(p) for p in in_window]
+    after_rows = [_closed_row(p) for p in after]
     decision_rows = [
         (d["ts_utc"], d["symbol"], d["action"], d["detail"], d["thesis"])
         for d in store.recent_decisions(conn, limit=60)
@@ -126,6 +171,19 @@ def render(conn: sqlite3.Connection) -> str:
 <h1>Alpaca Options Agent</h1>
 <p class="muted">Paper trading &middot; auto-refreshes every 30s</p>
 
+<h2>Competition result &mdash; {COMPETITION['start']} to {COMPETITION['end']} (judged window)</h2>
+<div class="cards">
+  <div class="card"><div class="k">Final equity</div><div class="v">${comp['equity']:,.0f}</div></div>
+  <div class="card"><div class="k">P&amp;L</div><div class="v">{comp['pnl']:+,.0f}</div></div>
+  <div class="card"><div class="k">Return</div><div class="v">{comp['pct']:+.2%}</div></div>
+  <div class="card"><div class="k">Closed</div><div class="v">{comp['closed']}</div></div>
+  <div class="card"><div class="k">Win rate</div><div class="v">{comp_wr}</div></div>
+</div>
+<p class="muted">Official P&amp;L window: 31 Aug 09:30 ET &rarr; 4 Sep 09:30 ET,
+scored on total account equity at the EOD 3 Sep snapshot. Started at
+$100,000.</p>
+
+<h2>Live now &mdash; after the window, still trading</h2>
 <div class="cards">
   <div class="card"><div class="k">Equity</div><div class="v">${s['equity']:,.0f}</div></div>
   <div class="card"><div class="k">Realised P&amp;L</div><div class="v">{s['realised']:+,.0f}</div></div>
@@ -133,6 +191,11 @@ def render(conn: sqlite3.Connection) -> str:
   <div class="card"><div class="k">Closed</div><div class="v">{s['closed']}</div></div>
   <div class="card"><div class="k">Win rate</div><div class="v">{wr}</div></div>
 </div>
+<p class="muted">The agent keeps running past the competition. On 4 Sep a
+deadline rule force-exited every position each tick while entries stayed open,
+so one contract was repeatedly bought and re-sold before it was caught and
+fixed &mdash; those round trips are in the post-window table below, and they
+fall entirely outside the judged window above.</p>
 
 {sparkline(store.equity_series(conn))}
 
@@ -140,8 +203,11 @@ def render(conn: sqlite3.Connection) -> str:
  ["contract","underlying","right","qty","entry","stop","target","expiry","thesis"],
  open_rows)}</div>
 
-<h2>Closed positions</h2><div class="wrap">{_rows(
+<h2>Closed positions &mdash; competition window</h2><div class="wrap">{_rows(
  ["contract","qty","entry","exit","P&L","reason"], closed_rows)}</div>
+
+<h2>Closed positions &mdash; after the window</h2><div class="wrap">{_rows(
+ ["contract","qty","entry","exit","P&L","reason"], after_rows)}</div>
 
 <h2>Decision log</h2><div class="wrap">{_rows(
  ["time (UTC)","symbol","action","detail","thesis"], decision_rows)}</div>
