@@ -127,12 +127,12 @@ def test_decide_prompt_lists_every_contract_by_symbol():
     assert "SPY260904C00765000" in prompt and "SPY260904C00770000" in prompt
 
 
-def test_decide_uses_opus_5_by_default():
+def test_decide_uses_sonnet_5_by_default():
     client = FakeClient(tool_use_response(
         {"action": "skip", "symbol": "none", "confidence": 0.1, "thesis": "x"}))
     decide.decide(client, CANDIDATE, [contract("SPY260904C00765000")],
                   PORTFOLIO, TODAY)
-    assert client.calls[0]["model"] == "claude-opus-5"
+    assert client.calls[0]["model"] == "claude-sonnet-5"
 
 
 def test_tool_schema_avoids_number_bounds_the_strict_api_rejects():

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from agent.gates import Contract
 
-MODEL = "claude-opus-5"
+MODEL = "claude-sonnet-5"
 
 SYSTEM = (
     "You are the decision layer of an autonomous options trading agent running "

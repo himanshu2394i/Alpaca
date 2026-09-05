@@ -72,7 +72,7 @@ Verified 29 Aug 2026 by running the suite and reading each module.
 | Momentum screener | **Working** | Thresholds measured against 9 real sessions via `tools/replay.py` |
 | Multi-timeframe filter | **Working** | 4H Supertrend + RSI, 15m EMA200 |
 | Risk gates | **Working** | 12 independent checks; nothing the LLM outputs can bypass them |
-| LLM decision layer | **Working** | Claude Opus 5, constrained by a strict enum tool schema |
+| LLM decision layer | **Working** | Claude Sonnet 5, constrained by a strict enum tool schema |
 | Deterministic fallback | **Working** | `--deterministic` runs the full agent with no LLM |
 | Order execution | **Working** | Limit only, 60s fill poll, cancel-and-retry once |
 | Exit triggers | **Working** | Live option quotes; premium ±80/−40% and underlying stops; sell at bid |
@@ -134,7 +134,7 @@ flowchart LR
         WS[Alpaca IEX<br/>websocket]
         REST[Alpaca REST<br/>historical bars]
         MCP[alpaca-mcp-server<br/>stdio subprocess]
-        LLM[Anthropic API<br/>claude-opus-5]
+        LLM[Anthropic API<br/>claude-sonnet-5]
     end
 
     subgraph proc[This machine]
