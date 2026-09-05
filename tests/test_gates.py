@@ -131,6 +131,26 @@ def test_size_is_never_negative_or_fractional():
     assert isinstance(n, int) and n >= 0
 
 
+# --- entry cutoff, checked once per tick, not once per candidate -----------
+#
+# approve() already rejects a late entry, but only after the screener has
+# fetched a chain and the LLM has been asked to decide - both real cost for
+# an outcome the clock alone already determined. Live 2026-09-04: from 15:30
+# ET to the close, the agent called Claude Opus for two candidates roughly
+# every 70 seconds, for hours, and rejected both every single time on this
+# exact check. entry_cutoff_reason() lets the caller skip the screener and
+# the LLM entirely once it's true, instead of discovering it after paying for both.
+
+def test_entry_cutoff_reason_is_none_before_the_cutoff():
+    assert gates.entry_cutoff_reason("15:29") is None
+
+
+def test_entry_cutoff_reason_fires_at_and_after_the_cutoff():
+    assert gates.entry_cutoff_reason("15:30") is not None
+    assert gates.entry_cutoff_reason("19:59") is not None
+    assert "15:30" in gates.entry_cutoff_reason("16:00")
+
+
 # --- account-level halts ----------------------------------------------------
 
 def test_no_halt_on_a_normal_day():

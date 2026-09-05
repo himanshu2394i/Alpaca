@@ -113,6 +113,13 @@ async def tick(
             halt_reason = exits.competition_over_reason(today)
         if halt_reason is None:
             halt_reason = gates.data_stale_reason(store.newest_bar_ts(conn), now_utc)
+        if halt_reason is None:
+            # Checked once per tick, before the screener or the LLM ever run:
+            # approve() already rejects a late entry on this same clock check,
+            # but only after a chain fetch and a real Claude call already
+            # happened. Live 2026-09-04: that cost was paid every ~70s from
+            # 15:30 ET to the close, for two candidates that never once passed.
+            halt_reason = gates.entry_cutoff_reason(_et_hhmm(now_utc))
 
     # --- exits first, and regardless of any halt --------------------------
     exit_signals = exits.scan(conn, underlyings, premiums, today)

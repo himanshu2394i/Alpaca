@@ -531,6 +531,42 @@ async def test_live_fill_on_retry_still_logs_the_canceled_first_attempt(
 # a position sized at the request, when only part of it filled, records
 # contracts the account does not hold.
 
+class CountingBroker(FakeBroker):
+    """Counts fetch_chain calls, to prove the entry loop never reaches it."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.fetch_chain_calls = 0
+
+    async def fetch_chain(self, *a, **kw):
+        self.fetch_chain_calls += 1
+        return await super().fetch_chain(*a, **kw)
+
+
+async def test_past_the_entry_cutoff_the_screener_and_llm_are_never_reached(
+        conn, tmp_path, monkeypatch):
+    """Live 2026-09-04: from 15:30 ET to the close, every tick fetched a chain
+    and called Claude Opus for NFLX and MU, then rejected both on this exact
+    clock check inside approve() - a real API call every ~70s for hours, for
+    an outcome the clock alone already decided. The cutoff must be checked
+    before either cost is paid, not after.
+    """
+    seed_fresh_bars(conn, ts_utc="2026-08-26T20:00:00Z")  # 16:00 ET - past cutoff
+    monkeypatch.setattr(screener, "scan", lambda *a, **kw: [a_candidate()])
+    broker = CountingBroker(chain={"snapshots": {OPTION_SYMBOL: option_snap()}})
+    client = FakeDecideClient(action="enter", symbol=OPTION_SYMBOL)
+
+    result = await run.tick(conn, broker, now_utc="2026-08-26T20:00:00Z", today=TODAY,
+                            underlyings={}, equity=100_000, day_start=100_000,
+                            peak=100_000, halt_file=tmp_path / "HALT",
+                            decide_client=client)
+
+    assert result["halted"] is True
+    assert "cutoff" in result["halt_reason"]
+    assert broker.fetch_chain_calls == 0, "must not fetch a chain past the cutoff"
+    assert client.calls == [], "must not call the LLM past the cutoff"
+
+
 async def test_entries_are_blocked_once_the_competition_deadline_passes(
         conn, tmp_path, monkeypatch):
     """The 2026-09-04 buy/sell loop.

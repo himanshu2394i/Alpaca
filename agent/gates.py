@@ -142,6 +142,21 @@ def size_contracts(equity: float, ask: float, risk: dict = RISK) -> int:
     return max(0, int(budget // (ask * CONTRACT_MULTIPLIER)))
 
 
+def entry_cutoff_reason(now_et: str, risk: dict = RISK) -> str | None:
+    """Why no new entries may be attempted, based on the clock alone.
+
+    Meant to be checked once per tick, before the screener or the LLM ever
+    run. approve() already rejects a late entry with the same check, but only
+    after a chain has been fetched and the model has been asked to decide -
+    both real cost for an outcome the clock alone already determined. Live
+    2026-09-04: from 15:30 ET to the close, every ~70s tick called Claude
+    Opus for two candidates and rejected both here every time, for hours.
+    """
+    if now_et >= risk["no_entry_after"]:
+        return f"{now_et} ET is past the {risk['no_entry_after']} entry cutoff"
+    return None
+
+
 def halt_reason(
     equity: float, day_start: float, peak: float, risk: dict = RISK
 ) -> str | None:
