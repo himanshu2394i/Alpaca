@@ -417,7 +417,16 @@ async def _market_state(conn, sess, symbols):
             underlyings[symbol] = float(rows[0]["c"])
 
     account = await mcp_bridge.call(sess, "get_account_info", {})
-    equity = float(account.get("equity", 0) or 0)
+    try:
+        equity = float(account.get("equity") or 0)
+    except (TypeError, ValueError):
+        equity = 0.0
+    if equity <= 0:
+        # A failed fetch is not an account worth nothing. Live 2026-09-13 the
+        # call returned no equity for ~11 minutes and nine $0.00 rows were
+        # saved; the drawdown gate would have read -100% and silently blocked
+        # entries. Raising makes loop() skip the tick instead.
+        raise RuntimeError(f"account equity unavailable: {str(account)[:120]}")
     return underlyings, equity
 
 

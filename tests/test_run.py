@@ -712,3 +712,40 @@ def test_session_bounds_peak_never_falls_below_current_equity(conn):
     store.record_equity(conn, f"{TODAY}T13:30:00Z", 100_000)
     day_start, peak = run._session_bounds(conn, current_equity=103_000, today=TODAY)
     assert peak == 103_000
+
+
+# --- a failed account fetch must not be recorded as zero equity -------------
+#
+# Live 2026-09-13: Alpaca's account call returned no `equity` for ~11 minutes.
+# _market_state() turned the missing value into 0.0 and the loop saved it -
+# nine $0.00 rows in the equity table, and on a weekday the drawdown gate
+# would have read -100% and silently blocked entries. A missing equity is a
+# failed fetch, not an account worth nothing: refuse it so the tick is skipped.
+
+async def test_market_state_returns_equity_when_the_account_call_works(conn, monkeypatch):
+    import agent.mcp_bridge as mcp_bridge_module
+
+    async def fake_call(sess, name, args):
+        return {"equity": "100000"}
+
+    monkeypatch.setattr(mcp_bridge_module, "call", fake_call)
+    _, equity = await run._market_state(conn, object(), [])
+    assert equity == 100_000.0
+
+
+@pytest.mark.parametrize("payload", [
+    {},                                              # empty envelope
+    {"text": "Error calling tool: HTTP 503"},         # tool error surfaced as text
+    {"equity": None},
+    {"equity": "0"},
+    {"equity": "not-a-number"},
+])
+async def test_market_state_refuses_a_missing_or_zero_equity(conn, monkeypatch, payload):
+    import agent.mcp_bridge as mcp_bridge_module
+
+    async def fake_call(sess, name, args):
+        return payload
+
+    monkeypatch.setattr(mcp_bridge_module, "call", fake_call)
+    with pytest.raises(RuntimeError, match="equity"):
+        await run._market_state(conn, object(), [])
