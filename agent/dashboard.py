@@ -21,36 +21,49 @@ COMPETITION = {
     "end": "2026-09-03",         # EOD Thursday - the judged equity snapshot
     "start_equity": 100_000.0,
 }
-"""The window that was actually scored.
+"""The window that was actually scored, for the frozen record below."""
 
-The agent keeps trading after the window closes, so the live cards on their own
-misrepresent the judged result. Both are shown, each labelled - the scored
-numbers lead, the live ones sit underneath. Nothing is filtered out of the
-tables; post-window rows are separated rather than hidden.
+NEW_ACCOUNT_SINCE = "2026-09-13"
+"""First day of the current account. The 'Live now' section reflects this
+account only - nothing before this date belongs to it."""
+
+COMPETITION_RESULT = {
+    "equity": 99_383.36,
+    "pnl": -616.64,
+    "pct": -0.0061664,
+    "closed": 6,
+    "win_rate": 2 / 6,
+}
+"""The judged outcome, frozen. Captured from the live database on 2026-09-13,
+right before the account was switched and the audit tables were wiped
+(ops/competition_cutover.py) - after that, this result no longer exists
+anywhere the page could compute it live. It is a fact about a closed period
+that will never change, so a constant is more honest here than a query that
+would silently start returning zeroes once its source rows are gone.
 """
 
+COMPETITION_TRADES = [
+    # (symbol, qty, entry_price, exit_price, exit_reason)
+    ("TSLA260911C00370000", 2, 8.25, 4.80, "premium -42% at or below -40%"),
+    ("AAPL260909C00320000", 3, 5.25, 9.40, "premium +85% at or above 80%"),
+    ("TSLA260918C00365000", 1, 11.70, 6.95, "premium -41% at or below -40%"),
+    ("IWM260918P00290000", 6, 3.28, 2.18, "underlying 295.81 broke stop 295.34"),
+    ("AVGO260918P00345000", 1, 9.95, 6.05, "underlying 353.64 broke stop 353.51"),
+    ("MSTR260918C00140000", 2, 8.75, 9.95, "underlying 142.72 reached target 142.69"),
+]
+"""The 6 trades inside the judged window, frozen alongside COMPETITION_RESULT
+for the same reason - captured before the cutover wipe removed their source
+rows from `positions`."""
 
-def competition_summary(conn: sqlite3.Connection, window: dict = COMPETITION) -> dict:
-    """The judged numbers: equity at the snapshot, and trades closed inside it."""
-    rows = [r for r in store.equity_series(conn, limit=20000)
-            if r["ts_utc"][:10] <= window["end"]]
-    final = float(rows[-1]["value"]) if rows else window["start_equity"]
 
-    closed = [p for p in store.closed_positions(conn)
-              if p["exit_ts"] and p["exit_ts"][:10] <= window["end"]
-              and p["exit_price"] is not None]
-    realised = sum((p["exit_price"] - p["entry_price"]) * p["qty"] * CONTRACT_MULTIPLIER
-                   for p in closed)
-    wins = sum(1 for p in closed if p["exit_price"] > p["entry_price"])
+def competition_summary() -> dict:
+    """The judged numbers: equity at the snapshot, and trades closed inside it.
 
-    return {
-        "equity": final,
-        "pnl": final - window["start_equity"],
-        "pct": (final - window["start_equity"]) / window["start_equity"],
-        "closed": len(closed),
-        "realised": realised,
-        "win_rate": (wins / len(closed)) if closed else None,
-    }
+    Frozen (see COMPETITION_RESULT) rather than queried - the window closed
+    for good on 2026-09-03 and its source rows are gone after the account
+    switch, so there is nothing left in the database to compute this from.
+    """
+    return dict(COMPETITION_RESULT)
 
 
 def summary(conn: sqlite3.Connection) -> dict:
@@ -112,7 +125,7 @@ def render(conn: sqlite3.Connection) -> str:
     """The whole page. Every database value is escaped: thesis and detail text
     is model-written, and must never be able to become markup."""
     s = summary(conn)
-    comp = competition_summary(conn)
+    comp = competition_summary()
     wr = f"{s['win_rate']:.0%}" if s["win_rate"] is not None else "-"
     comp_wr = f"{comp['win_rate']:.0%}" if comp["win_rate"] is not None else "-"
 
@@ -130,13 +143,13 @@ def render(conn: sqlite3.Connection) -> str:
                 if p["exit_price"] is not None else "-",
                 p["exit_reason"] or "-")
 
-    all_closed = store.closed_positions(conn)
-    in_window = [p for p in all_closed
-                 if p["exit_ts"] and p["exit_ts"][:10] <= COMPETITION["end"]]
-    after = [p for p in all_closed
-             if not (p["exit_ts"] and p["exit_ts"][:10] <= COMPETITION["end"])]
-    closed_rows = [_closed_row(p) for p in in_window]
-    after_rows = [_closed_row(p) for p in after]
+    def _frozen_row(t):
+        symbol, qty, entry, exit_, reason = t
+        return (symbol, qty, f"{entry:.2f}", f"{exit_:.2f}",
+                f"{(exit_ - entry) * qty * CONTRACT_MULTIPLIER:+,.0f}", reason)
+
+    closed_rows = [_frozen_row(t) for t in COMPETITION_TRADES]
+    after_rows = [_closed_row(p) for p in store.closed_positions(conn)]
     decision_rows = [
         (d["ts_utc"], d["symbol"], d["action"], d["detail"], d["thesis"])
         for d in store.recent_decisions(conn, limit=60)
@@ -183,7 +196,7 @@ def render(conn: sqlite3.Connection) -> str:
 scored on total account equity at the EOD 3 Sep snapshot. Started at
 $100,000.</p>
 
-<h2>Live now &mdash; after the window, still trading</h2>
+<h2>Live now &mdash; since {NEW_ACCOUNT_SINCE}</h2>
 <div class="cards">
   <div class="card"><div class="k">Equity</div><div class="v">${s['equity']:,.0f}</div></div>
   <div class="card"><div class="k">Realised P&amp;L</div><div class="v">{s['realised']:+,.0f}</div></div>
@@ -191,11 +204,10 @@ $100,000.</p>
   <div class="card"><div class="k">Closed</div><div class="v">{s['closed']}</div></div>
   <div class="card"><div class="k">Win rate</div><div class="v">{wr}</div></div>
 </div>
-<p class="muted">The agent keeps running past the competition. On 4 Sep a
-deadline rule force-exited every position each tick while entries stayed open,
-so one contract was repeatedly bought and re-sold before it was caught and
-fixed &mdash; those round trips are in the post-window table below, and they
-fall entirely outside the judged window above.</p>
+<p class="muted">A fresh paper account, trading since {NEW_ACCOUNT_SINCE} on the
+same strategy and risk gates as the judged competition above. The database was
+reset for the account switch (audit tables cleared, market history kept), so
+everything below this line belongs to this account only.</p>
 
 {sparkline(store.equity_series(conn))}
 
@@ -203,10 +215,10 @@ fall entirely outside the judged window above.</p>
  ["contract","underlying","right","qty","entry","stop","target","expiry","thesis"],
  open_rows)}</div>
 
-<h2>Closed positions &mdash; competition window</h2><div class="wrap">{_rows(
+<h2>Closed positions &mdash; competition window (frozen)</h2><div class="wrap">{_rows(
  ["contract","qty","entry","exit","P&L","reason"], closed_rows)}</div>
 
-<h2>Closed positions &mdash; after the window</h2><div class="wrap">{_rows(
+<h2>Closed positions &mdash; since {NEW_ACCOUNT_SINCE}</h2><div class="wrap">{_rows(
  ["contract","qty","entry","exit","P&L","reason"], after_rows)}</div>
 
 <h2>Decision log</h2><div class="wrap">{_rows(
