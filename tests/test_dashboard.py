@@ -82,3 +82,12 @@ def test_render_includes_the_headline_numbers(conn):
 def test_render_works_on_an_empty_database(conn):
     html = dashboard.render(conn)
     assert "<html" in html.lower() and "no equity" in html
+
+
+def test_render_states_the_strategy_the_account_is_running(conn):
+    """The page is public. It must not claim the live account runs the judged
+    competition strategy once that has changed."""
+    html = dashboard.render(conn)
+    assert "intraday-only" in html
+    assert dashboard.STRATEGY_CHANGED_ON in html
+    assert "same strategy" not in html
