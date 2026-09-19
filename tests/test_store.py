@@ -153,3 +153,55 @@ def test_upsert_bars_is_atomic_on_failure(conn):
         store.upsert_bars(conn, good + bad)
 
     assert store.recent_bars(conn, "SPY") == []
+
+
+# --- premium ticks: the option-price path of every open position -------------
+#
+# Every tick the agent already fetches a live bid/ask for each open position
+# and throws it away, so all we ever kept of a trade was its entry and exit. Any
+# question about the path in between (would a wider stop have survived, would
+# a trailing stop have banked more) was untestable. Ticks are tagged to the
+# specific position (symbol + entry_ts), not just the contract, because the
+# same contract is entered again and again.
+
+def test_premium_tick_round_trips(conn):
+    store.record_premium_tick(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z",
+                              "2026-08-24T14:06:00Z", bid=1.18, ask=1.22,
+                              underlying=764.5)
+    rows = store.premium_ticks(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z")
+    assert len(rows) == 1
+    assert (rows[0]["bid"], rows[0]["ask"], rows[0]["underlying"]) == (1.18, 1.22, 764.5)
+    assert rows[0]["ts_utc"] == "2026-08-24T14:06:00Z"
+
+
+def test_premium_ticks_come_back_oldest_first(conn):
+    for minute, bid in (("07", 1.30), ("06", 1.20), ("08", 1.10)):
+        store.record_premium_tick(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z",
+                                  f"2026-08-24T14:{minute}:00Z", bid, bid + 0.04, None)
+    rows = store.premium_ticks(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z")
+    assert [r["bid"] for r in rows] == [1.20, 1.30, 1.10]
+
+
+def test_premium_ticks_keep_reentries_of_one_contract_apart(conn):
+    sym = "SMCI260918C00040000"
+    store.record_premium_tick(conn, sym, "2026-09-04T14:17:00Z",
+                              "2026-09-04T14:18:00Z", 1.90, 1.95, 41.0)
+    store.record_premium_tick(conn, sym, "2026-09-04T15:35:00Z",
+                              "2026-09-04T15:36:00Z", 2.10, 2.15, 41.5)
+    assert len(store.premium_ticks(conn, sym, "2026-09-04T14:17:00Z")) == 1
+    assert len(store.premium_ticks(conn, sym, "2026-09-04T15:35:00Z")) == 1
+
+
+def test_premium_tick_replay_is_idempotent(conn):
+    for _ in range(2):
+        store.record_premium_tick(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z",
+                                  "2026-08-24T14:06:00Z", 1.18, 1.22, 764.5)
+    assert len(store.premium_ticks(conn, "SPY260911C00765000",
+                                   "2026-08-24T14:05:00Z")) == 1
+
+
+def test_premium_tick_underlying_is_optional(conn):
+    store.record_premium_tick(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z",
+                              "2026-08-24T14:06:00Z", 1.18, 1.22, None)
+    rows = store.premium_ticks(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z")
+    assert rows[0]["underlying"] is None

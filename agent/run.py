@@ -121,6 +121,16 @@ async def tick(
             # 15:30 ET to the close, for two candidates that never once passed.
             halt_reason = gates.entry_cutoff_reason(_et_hhmm(now_utc))
 
+    # Keep the price path of every open position. Recorded before exits run so
+    # the last tick of a trade is its exit tick, and regardless of any halt -
+    # the data is only useful if it is continuous.
+    for p in store.open_positions(conn):
+        quote = quotes.get(p["symbol"])
+        if quote:
+            store.record_premium_tick(conn, p["symbol"], p["entry_ts"], now_utc,
+                                      quote[0], quote[1],
+                                      underlyings.get(p["underlying"]))
+
     # --- exits first, and regardless of any halt --------------------------
     exit_signals = exits.scan(conn, underlyings, premiums, today)
     for signal in exit_signals:

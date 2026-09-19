@@ -749,3 +749,58 @@ async def test_market_state_refuses_a_missing_or_zero_equity(conn, monkeypatch, 
     monkeypatch.setattr(mcp_bridge_module, "call", fake_call)
     with pytest.raises(RuntimeError, match="equity"):
         await run._market_state(conn, object(), [])
+
+
+# --- the tick keeps the option-price path of every open position -------------
+
+def _open_call_and_put(conn):
+    open_a_losing_position(conn)   # SPY260911C00765000, entered 2026-08-24T14:05
+    store.open_position(conn, symbol="SPY260918P00760000",
+                        entry_ts="2026-08-25T15:00:00Z",
+                        **{**BASE, "right": "put", "expiry": "2026-09-18",
+                           "stop_underlying": 770.0, "target_underlying": 755.0})
+
+
+async def test_tick_logs_a_premium_tick_for_each_open_position_with_a_quote(
+        conn, tmp_path):
+    _open_call_and_put(conn)
+    quotes = {"SPY260911C00765000": (1.58, 1.62), "SPY260918P00760000": (2.00, 2.20)}
+
+    await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 765.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT", quotes=quotes)
+
+    call = store.premium_ticks(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z")
+    put = store.premium_ticks(conn, "SPY260918P00760000", "2026-08-25T15:00:00Z")
+    assert [(r["ts_utc"], r["bid"], r["ask"], r["underlying"]) for r in call] == [
+        (NOW, 1.58, 1.62, 765.0)]
+    assert [(r["bid"], r["ask"]) for r in put] == [(2.00, 2.20)]
+
+
+async def test_tick_logs_nothing_for_a_position_without_a_quote(conn, tmp_path):
+    _open_call_and_put(conn)
+
+    await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 765.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT",
+                   quotes={"SPY260911C00765000": (1.58, 1.62)})   # put has no quote
+
+    assert store.premium_ticks(conn, "SPY260918P00760000", "2026-08-25T15:00:00Z") == []
+    assert len(store.premium_ticks(conn, "SPY260911C00765000",
+                                   "2026-08-24T14:05:00Z")) == 1
+
+
+async def test_premium_ticks_are_logged_even_while_halted(conn, tmp_path):
+    # The data is only useful if it is continuous; a halt stops entries, not
+    # observation.
+    _open_call_and_put(conn)
+    halt = tmp_path / "HALT"
+    halt.write_text("stop")
+
+    await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 765.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=halt,
+                   quotes={"SPY260911C00765000": (1.58, 1.62)})
+
+    assert len(store.premium_ticks(conn, "SPY260911C00765000",
+                                   "2026-08-24T14:05:00Z")) == 1

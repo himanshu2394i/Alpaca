@@ -44,6 +44,21 @@ CREATE TABLE IF NOT EXISTS positions (
 
 CREATE INDEX IF NOT EXISTS positions_open ON positions(status);
 
+-- The option-price path of every open position, one row per tick. Tagged to
+-- the specific position (symbol + entry_ts, the positions key) rather than
+-- the contract alone, because the same contract is entered again and again.
+-- `underlying` is the stock price at the same instant, so a later analysis can
+-- tell a premium move caused by the stock from one caused by time or volatility.
+CREATE TABLE IF NOT EXISTS premium_ticks (
+    symbol     TEXT NOT NULL,
+    entry_ts   TEXT NOT NULL,
+    ts_utc     TEXT NOT NULL,
+    bid        REAL NOT NULL,
+    ask        REAL NOT NULL,
+    underlying REAL,
+    PRIMARY KEY (symbol, entry_ts, ts_utc)
+);
+
 -- Every decision the agent reached, including the ones to do nothing. This is
 -- the audit trail and the demo artifact: a rejection with its reason is more
 -- informative than a trade without one.
@@ -177,6 +192,27 @@ def close_position(
         "exit_reason = ? WHERE symbol = ? AND status = 'open'",
         (exit_price, exit_ts, exit_reason, symbol),
     )
+
+
+def record_premium_tick(
+    conn: sqlite3.Connection, symbol: str, entry_ts: str, ts_utc: str,
+    bid: float, ask: float, underlying: float | None,
+) -> None:
+    """Keep one point of an open position's option-price path."""
+    conn.execute(
+        "INSERT OR REPLACE INTO premium_ticks "
+        "(symbol, entry_ts, ts_utc, bid, ask, underlying) VALUES (?, ?, ?, ?, ?, ?)",
+        (symbol, entry_ts, ts_utc, bid, ask, underlying),
+    )
+
+
+def premium_ticks(conn: sqlite3.Connection, symbol: str,
+                  entry_ts: str) -> list[sqlite3.Row]:
+    """The recorded price path of one position, oldest first."""
+    return conn.execute(
+        "SELECT * FROM premium_ticks WHERE symbol = ? AND entry_ts = ? "
+        "ORDER BY ts_utc", (symbol, entry_ts),
+    ).fetchall()
 
 
 def record_equity(conn: sqlite3.Connection, ts_utc: str, value: float) -> None:
