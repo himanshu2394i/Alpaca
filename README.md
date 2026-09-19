@@ -78,7 +78,7 @@ Verified 29 Aug 2026 by running the suite and reading each module.
 | Exit triggers | **Working** | Live option quotes; premium ±80/−40% and underlying stops; flat by 15:45 ET (intraday-only); sell at bid |
 | Boot reconciliation | **Working** | Local positions aligned against Alpaca before trading |
 | Dashboard | **Working** | Stdlib HTTP server, inline SVG equity curve |
-| Tests | **260 passing** | `python -m pytest` — ~15s, no credentials needed |
+| Tests | **268 passing** | `python -m pytest` — ~15s, no credentials needed |
 | Deployment | **Working** | systemd units for a US-region Ubuntu VM |
 
 ---
@@ -151,7 +151,7 @@ flowchart LR
     DB -->|bars| AGT
     AGT <-->|chain, account, orders| MCP
     AGT <-->|decide| LLM
-    AGT -->|positions, decisions, equity| DB
+    AGT -->|positions, decisions,<br/>equity, premium ticks| DB
     DB -->|read| DASH
 ```
 
@@ -166,33 +166,34 @@ SQLite runs in **WAL mode**, which lets the dashboard read while ingest writes.
 
 ```mermaid
 flowchart TD
-    START([tick starts]) --> HALT{halted?}
-    HALT -->|HALT file<br/>risk limit<br/>stale data| EXITONLY[run exits only]
-    HALT -->|no| EXITS[run exits]
-
-    EXITONLY --> STOP([return])
-    EXITS --> SCAN[screener.scan<br/>30 symbols]
+    START([tick starts]) --> TICKS[keep the price path of each<br/>open position - session only]
+    TICKS --> EXITS[run exits<br/>stops, targets, DTE cliff,<br/>flat by 15:45 ET]
+    EXITS --> HALT{halted?}
+    HALT -->|"HALT file, drawdown,<br/>daily loss, stale data,<br/>past 14:30 ET"| STOP([return])
+    HALT -->|no| SCAN[screener.scan<br/>30 symbols]
 
     SCAN -->|no candidates| STOP
-    SCAN -->|candidate| CHAIN[fetch option chain<br/>via MCP, paginated]
-    CHAIN --> VIABLE[gates.viable<br/>liquidity, spread,<br/>delta, DTE]
+    SCAN -->|each candidate| CHAIN[fetch option chain<br/>via MCP, paginated]
+    CHAIN --> MODE{LLM enabled?}
 
-    VIABLE -->|none pass| LOGNC[log 'no_contract'] --> STOP
-    VIABLE -->|survivors| MODE{LLM enabled?}
-
-    MODE -->|yes| DECIDE[decide.decide<br/>enter or skip]
-    MODE -->|no| PICK[pick_contract<br/>closest to 0.45 delta]
-
-    DECIDE -->|skip| LOGSKIP[log 'skip'] --> STOP
+    MODE -->|yes| VIABLE[gates.viable<br/>liquidity, spread,<br/>delta, DTE]
+    VIABLE -->|none pass| LOGSKIP[log 'skip']
+    VIABLE -->|survivors| DECIDE[decide.decide<br/>enter or skip]
+    DECIDE -->|skip| LOGSKIP
     DECIDE -->|enter| SIZE
-    PICK --> SIZE[gates.size_contracts]
 
+    MODE -->|no| PICK[pick_contract<br/>closest to 0.45 delta]
+    PICK -->|none viable| LOGNC[log 'no_contract']
+    PICK -->|found| SIZE[gates.size_contracts]
+
+    LOGSKIP --> STOP
+    LOGNC --> STOP
     SIZE --> APPROVE{gates.approve}
     APPROVE -->|rejected| LOGREJ[log 'rejected'] --> STOP
     APPROVE -->|ok| ORDER[execute.submit<br/>limit order]
 
     ORDER --> POLL{filled<br/>within 60s?}
-    POLL -->|yes| OPEN[store.open_position<br/>log 'entry'] --> STOP
+    POLL -->|yes, even partly| OPEN[store.open_position<br/>filled qty, log 'entry'] --> STOP
     POLL -->|no| RETRY[cancel, retry once<br/>at the ask]
     RETRY -->|filled| OPEN
     RETRY -->|no| ABANDON[log 'abandoned'] --> STOP
@@ -200,12 +201,18 @@ flowchart TD
 
 ### Layer dependencies
 
-Modules only depend downward. Nothing in the bottom layer imports anything above it,
-which is what makes the whole thing testable without credentials.
+Modules only depend downward and nothing imports `run.py`. `config`, `indicators` and
+`mcp_bridge` import nothing from the project, which is what makes the pure logic
+testable without credentials. Dotted arrows are imports made inside a function rather
+than at the top of the file. A test (`tests/test_readme_diagrams.py`) checks every arrow
+below against the real imports and checks the graph has no cycles, so this diagram
+cannot quietly drift from the code.
 
 ```mermaid
 flowchart TD
     RUN[run.py<br/>orchestration]
+    INGEST[ingest.py<br/>market data]
+    DASH[dashboard.py<br/>read-only view]
     DECIDE[decide.py]
     EXECUTE[execute.py]
     EXITS[exits.py]
@@ -217,15 +224,20 @@ flowchart TD
     STORE[store.py]
     CFG[config.py]
 
-    RUN --> DECIDE & EXECUTE & EXITS & RECON & SCREEN & GATES & BRIDGE
+    RUN --> CFG & DECIDE & EXECUTE & EXITS & GATES & IND & RECON & SCREEN & STORE
+    RUN -.-> BRIDGE
+    INGEST --> CFG & STORE
+    DASH --> CFG & STORE
     DECIDE --> GATES
-    EXECUTE --> GATES & BRIDGE
-    EXITS --> STORE
-    RECON --> GATES & EXITS & IND & STORE
+    EXECUTE --> GATES
+    EXECUTE -.-> BRIDGE
+    EXITS --> IND
+    EXITS -.-> STORE
+    RECON --> EXITS & GATES & IND & STORE
+    RECON -.-> BRIDGE
     SCREEN --> IND & STORE
-    GATES --> IND
-    IND --> STORE
-    STORE --> CFG
+    GATES -.-> IND
+    STORE -.-> GATES
 ```
 
 ---
@@ -443,7 +455,7 @@ production incidents. Those are the most valuable thing in here — see
 
 ## Data model
 
-Four tables, all defined in `store.SCHEMA`.
+Five tables, all defined in `store.SCHEMA`.
 
 ```mermaid
 erDiagram
@@ -484,6 +496,15 @@ erDiagram
         TEXT ts_utc PK
         REAL value
     }
+    premium_ticks {
+        TEXT symbol PK
+        TEXT entry_ts PK
+        TEXT ts_utc PK
+        REAL bid
+        REAL ask
+        REAL underlying
+    }
+    positions ||--o{ premium_ticks : "price path"
 ```
 
 - **`bars`** — 1-minute OHLCV. Keyed `(symbol, ts_utc)` with `INSERT OR REPLACE`, so
@@ -498,6 +519,12 @@ erDiagram
   and the demo artifact.**
 - **`equity`** — account snapshots. The P&L curve the dashboard draws, and the source
   for recovering day-start and peak on restart.
+- **`premium_ticks`** — the option-price path of every open position: one row per
+  position per tick during the session (bid, ask and the underlying price at that
+  instant), keyed `(symbol, entry_ts, ts_utc)` so a contract entered repeatedly keeps
+  a separate path each time. It exists so questions about the path between entry and
+  exit (would a wider stop have survived, would a trailing stop have banked more) can
+  be answered from data instead of argued.
 
 ---
 
