@@ -243,6 +243,11 @@ def closed_positions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def equity_peak(conn: sqlite3.Connection) -> float | None:
+    """Highest equity ever recorded, across the whole table (not a recent window)."""
+    return conn.execute("SELECT MAX(value) FROM equity").fetchone()[0]
+
+
 def equity_series(conn: sqlite3.Connection, limit: int = 2000) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM (SELECT * FROM equity ORDER BY ts_utc DESC LIMIT ?) "
