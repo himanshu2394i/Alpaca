@@ -124,7 +124,9 @@ async def tick(
     # Keep the price path of every open position. Recorded before exits run so
     # the last tick of a trade is its exit tick, and regardless of any halt -
     # the data is only useful if it is continuous.
-    for p in store.open_positions(conn):
+    # Session only: after the bell and all weekend the quote is the same stale
+    # one every tick, which is noise, not price path.
+    for p in (store.open_positions(conn) if _is_rth(now_utc) else []):
         quote = quotes.get(p["symbol"])
         if quote:
             store.record_premium_tick(conn, p["symbol"], p["entry_ts"], now_utc,
@@ -356,7 +358,10 @@ def _session_bounds(conn, current_equity: float, today: str) -> tuple[float, flo
 
     todays = [r for r in rows if r["ts_utc"][:10] == today]
     day_start = float(todays[0]["value"]) if todays else current_equity
-    peak = max(max(float(r["value"]) for r in rows), current_equity)
+    # equity_series() is only the latest ~2000 rows (~1.4 days), so the peak
+    # must come from its own query or the drawdown halt measures from a
+    # baseline that has quietly forgotten the real high.
+    peak = max(store.equity_peak(conn) or 0.0, current_equity)
     return day_start, peak
 
 

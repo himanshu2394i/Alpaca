@@ -833,3 +833,38 @@ async def test_tick_sells_a_same_day_position_at_the_flatten_time(
     assert [o["side"] for o, _ in broker.orders] == ["sell"]
     assert store.open_positions(conn) == []
     assert "end of day" in store.closed_positions(conn)[0]["exit_reason"]
+
+
+# --- tick logging is for the session; the drawdown peak is all-time ----------
+
+async def test_premium_ticks_are_not_logged_outside_the_session(conn, tmp_path):
+    """After the bell (and all weekend) options do not trade, so the quote is
+    the same stale one every tick - rows that carry no information. Found live
+    2026-09-19: three identical rows on a closed Saturday within one tick."""
+    _open_call_and_put(conn)
+    after_the_bell = "2026-08-26T20:30:00Z"                              # 16:30 ET
+
+    await run.tick(conn, FakeBroker(), now_utc=after_the_bell, today=TODAY,
+                   underlyings={"SPY": 765.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT",
+                   quotes={"SPY260911C00765000": (1.58, 1.62)})
+
+    assert store.premium_ticks(conn, "SPY260911C00765000",
+                               "2026-08-24T14:05:00Z") == []
+
+
+def test_session_bounds_peak_is_the_all_time_high_not_just_recent_rows(conn):
+    """equity_series() returns only the latest 2000 rows (~1.4 days). Live
+    2026-09-19 the agent started with peak=96,285 when the account had peaked
+    at 100,824 five days earlier - so the -8% drawdown halt measured from a
+    baseline 4.5% too low and would have fired late."""
+    conn.execute("BEGIN")
+    conn.execute("INSERT INTO equity VALUES ('2026-08-01T13:30:00Z', 110000)")
+    conn.executemany(
+        "INSERT INTO equity VALUES (?, ?)",
+        [(f"2026-08-{2 + i // 1440:02d}T{(i % 1440) // 60:02d}:{i % 60:02d}:00Z", 100_000)
+         for i in range(2100)])                       # > 2000 newer rows
+    conn.execute("COMMIT")
+
+    _, peak = run._session_bounds(conn, current_equity=99_000, today=TODAY)
+    assert peak == 110_000
