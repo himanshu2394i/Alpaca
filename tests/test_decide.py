@@ -141,3 +141,10 @@ def test_tool_schema_avoids_number_bounds_the_strict_api_rejects():
     tool = decide.build_decision_tool(["SPY260904C00765000"])
     conf = tool["input_schema"]["properties"]["confidence"]
     assert "minimum" not in conf and "maximum" not in conf
+
+
+def test_system_prompt_tells_the_model_positions_are_closed_the_same_day():
+    """The model picks the contract, so it has to know the hold horizon: with
+    a same-day close-out, "time to survive a pullback" is worth nothing and a
+    tight spread and good delta are worth more."""
+    assert "same day" in decide.SYSTEM

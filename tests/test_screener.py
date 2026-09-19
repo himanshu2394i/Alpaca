@@ -187,3 +187,12 @@ def test_scan_drops_throttled_symbols(conn):
 
     state = screener.ThrottleState(last_entry={"SPY": _ts(TODAY, 39)})
     assert screener.scan(conn, ["SPY"], TODAY, state) == []
+
+
+def test_first_entry_waits_for_thirty_session_bars():
+    """Regular-hours minute 30 is 10:00 ET. Option spreads are widest and
+    implied volatility highest in the first half hour, so the agent does not
+    buy into it - a move that is real will still be there at 10:00."""
+    for n_bars, should_fire in ((29, False), (30, True)):
+        bars = history() + moving_session(TODAY, ramp(100.0, 108.0, n_bars), vol=2000)
+        assert (screener.evaluate(bars, TODAY) is not None) is should_fire, n_bars

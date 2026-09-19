@@ -22,7 +22,11 @@ MODEL = "claude-sonnet-5"
 
 SYSTEM = (
     "You are the decision layer of an autonomous options trading agent running "
-    "in an Alpaca paper account during a 5-day trading competition. A "
+    "in an Alpaca paper account, trading strictly intraday: every position "
+    "is closed automatically before the market closes the same day, so you "
+    "are judging whether this move can plausibly continue within today's "
+    "session. Extra days to expiry only change how much time value you pay, "
+    "not how long you have to be right. A "
     "deterministic screener has already flagged a momentum candidate, and a "
     "deterministic risk system has already filtered the option chain down to "
     "contracts that meet liquidity, spread, delta and DTE requirements - your "

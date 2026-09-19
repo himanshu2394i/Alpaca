@@ -75,10 +75,10 @@ Verified 29 Aug 2026 by running the suite and reading each module.
 | LLM decision layer | **Working** | Claude Sonnet 5, constrained by a strict enum tool schema |
 | Deterministic fallback | **Working** | `--deterministic` runs the full agent with no LLM |
 | Order execution | **Working** | Limit only, 60s fill poll, cancel-and-retry once |
-| Exit triggers | **Working** | Live option quotes; premium ±80/−40% and underlying stops; sell at bid |
+| Exit triggers | **Working** | Live option quotes; premium ±80/−40% and underlying stops; flat by 15:45 ET (intraday-only); sell at bid |
 | Boot reconciliation | **Working** | Local positions aligned against Alpaca before trading |
 | Dashboard | **Working** | Stdlib HTTP server, inline SVG equity curve |
-| Tests | **211 passing** | `python -m pytest` — 11.7s, no credentials needed |
+| Tests | **260 passing** | `python -m pytest` — ~15s, no credentials needed |
 | Deployment | **Working** | systemd units for a US-region Ubuntu VM |
 
 ---
@@ -253,8 +253,10 @@ every open position for:
 
 | Type | Trigger | Forced? |
 |---|---|---|
-| Competition end | today ≥ `2026-09-04` | yes |
+| Competition end | optional deadline date (off by default) | yes |
 | Expiry proximity | DTE ≤ 2 | yes |
+| End of day | 15:45 ET or later, same day as entry (intraday-only) | yes |
+| Held past entry day | entered on an earlier day; closed at the next open | yes |
 | Premium stop | premium down 40% from entry | no |
 | Premium target | premium up 80% from entry | no |
 | Underlying stop | price broke the stop level | no |
@@ -275,7 +277,8 @@ Exits have already run. Entries do not.
 - **RVOL ≥ 1.5** — trading at 1.5× its usual volume
 - Price on the correct side of **EMA(20)** — a move that round-tripped back through
   its own average is reverting, not trending
-- At least 20 bars into the session — don't judge a day on its first few minutes
+- At least 30 bars into the session (first entry 10:00 ET) — option spreads and implied
+  volatility are highest in the first half hour, so the agent waits it out
 - Passes the **multi-timeframe filter** (below)
 
 Then throttles: 60-minute cooldown per symbol, max 3 entries/day, max 5 concurrent.
@@ -340,7 +343,7 @@ that as "do not trade", never "buy one anyway".
 
 `gates.approve()` is the last checkpoint before money moves. It **re-runs viability**
 rather than trusting the earlier pass, because the chain may have moved between
-nomination and execution. It also checks the 15:30 ET entry cutoff, the 10% deployed
+nomination and execution. It also checks the 14:30 ET entry cutoff, the 10% deployed
 cap, and the 5-position cap.
 
 ### 9. Place the order
@@ -510,7 +513,7 @@ Outermost first. A trade must pass all ten.
 | 4 | Stale-data halt: no bars 5 min during RTH | `gates.data_stale_reason` |
 | 5 | Throttles: 60-min cooldown, 3/day, 5 concurrent | `screener.throttle_reason` |
 | 6 | Contract gates: liquidity, spread, delta, DTE | `gates.viable` |
-| 7 | Portfolio gates: 2% per trade, 10% deployed, 15:30 cutoff | `gates.approve` |
+| 7 | Portfolio gates: 2% per trade, 10% deployed, 14:30 cutoff | `gates.approve` |
 | 8 | LLM sees 8 read-only tools; cannot reach the market | `mcp_bridge.RESEARCH_TOOLS` |
 | 9 | Limit orders only, never market | `execute.build_order` |
 | 10 | Boot reconciliation against the broker | `reconcile.reconcile` |

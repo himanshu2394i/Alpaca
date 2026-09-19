@@ -121,8 +121,19 @@ async def tick(
             # 15:30 ET to the close, for two candidates that never once passed.
             halt_reason = gates.entry_cutoff_reason(_et_hhmm(now_utc))
 
+    # Keep the price path of every open position. Recorded before exits run so
+    # the last tick of a trade is its exit tick, and regardless of any halt -
+    # the data is only useful if it is continuous.
+    for p in store.open_positions(conn):
+        quote = quotes.get(p["symbol"])
+        if quote:
+            store.record_premium_tick(conn, p["symbol"], p["entry_ts"], now_utc,
+                                      quote[0], quote[1],
+                                      underlyings.get(p["underlying"]))
+
     # --- exits first, and regardless of any halt --------------------------
-    exit_signals = exits.scan(conn, underlyings, premiums, today)
+    exit_signals = exits.scan(conn, underlyings, premiums, today,
+                              now_utc=now_utc)
     for signal in exit_signals:
         position = next(p for p in store.open_positions(conn)
                         if p["symbol"] == signal.symbol)
@@ -417,7 +428,16 @@ async def _market_state(conn, sess, symbols):
             underlyings[symbol] = float(rows[0]["c"])
 
     account = await mcp_bridge.call(sess, "get_account_info", {})
-    equity = float(account.get("equity", 0) or 0)
+    try:
+        equity = float(account.get("equity") or 0)
+    except (TypeError, ValueError):
+        equity = 0.0
+    if equity <= 0:
+        # A failed fetch is not an account worth nothing. Live 2026-09-13 the
+        # call returned no equity for ~11 minutes and nine $0.00 rows were
+        # saved; the drawdown gate would have read -100% and silently blocked
+        # entries. Raising makes loop() skip the tick instead.
+        raise RuntimeError(f"account equity unavailable: {str(account)[:120]}")
     return underlyings, equity
 
 

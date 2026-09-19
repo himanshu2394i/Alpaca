@@ -9,7 +9,9 @@ Forced exits (expiry proximity, competition end) outrank discretionary ones and
 are reported first, because they must happen regardless of how the trade looks.
 """
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
+
+from agent.indicators import ET, TS_FMT, _is_rth
 
 EXIT = {
     "premium_stop_pct":   -0.40,   # give back 40% of premium -> out
@@ -19,6 +21,11 @@ EXIT = {
     # no deadline. Set back to a date only for another timed competition -
     # while it is set, entries are blocked too (see competition_over_reason).
     "competition_end":     None,
+    # Intraday-only. The entry signal is a same-day move from the open, so a
+    # position is held for that same day and closed before the bell (ET,
+    # HH:MM). One held past its entry day is closed at the next session. None
+    # turns the rule off and restores multi-day holds.
+    "flatten_after":       "15:45",
 }
 
 
@@ -67,12 +74,38 @@ def competition_over_reason(today: str, rules: dict = EXIT) -> str | None:
     return None
 
 
+def flat_by_close_reason(position, now_utc: str | None,
+                         rules: dict = EXIT) -> str | None:
+    """Why an intraday-only position must be closed now, or None.
+
+    Silent outside the regular session on purpose: nothing can be sold then,
+    and signalling anyway would write a failed-exit row per position per tick
+    all night. A position that survives the close is caught at the next open by
+    the entry-day rule instead.
+
+    Dates are compared in ET, not UTC - a UTC date flips at 20:00 ET.
+    """
+    flatten = rules.get("flatten_after")
+    if not flatten or not now_utc or not _is_rth(now_utc):
+        return None
+
+    now = datetime.strptime(now_utc, TS_FMT).replace(tzinfo=timezone.utc).astimezone(ET)
+    entered = (datetime.strptime(position["entry_ts"], TS_FMT)
+               .replace(tzinfo=timezone.utc).astimezone(ET))
+    if entered.date() < now.date():
+        return f"held past its entry day (intraday-only, entered {entered.date()})"
+    if now.strftime("%H:%M") >= flatten:
+        return f"end of day: flat by {flatten} ET (intraday-only)"
+    return None
+
+
 def _dte(expiry: str, today: str) -> int:
     return (date.fromisoformat(expiry) - date.fromisoformat(today)).days
 
 
 def check(position, underlying: float | None, premium: float | None,
-          today: str, rules: dict = EXIT) -> ExitSignal | None:
+          today: str, rules: dict = EXIT,
+          now_utc: str | None = None) -> ExitSignal | None:
     """Why this position should be closed now, or None.
 
     `position` is a mapping shaped like a row of the positions table.
@@ -90,6 +123,10 @@ def check(position, underlying: float | None, premium: float | None,
     dte = _dte(position["expiry"], today)
     if dte <= rules["min_dte"]:
         return signal(f"dte {dte} at or below {rules['min_dte']}", forced=True)
+
+    flat = flat_by_close_reason(position, now_utc, rules)
+    if flat:
+        return signal(flat, forced=True)
 
     # --- discretionary ------------------------------------------------------
     if premium is not None and position["entry_price"] > 0:
@@ -119,7 +156,8 @@ def check(position, underlying: float | None, premium: float | None,
 
 
 def scan(conn, underlyings: dict[str, float], premiums: dict[str, float],
-         today: str, rules: dict = EXIT) -> list[ExitSignal]:
+         today: str, rules: dict = EXIT,
+         now_utc: str | None = None) -> list[ExitSignal]:
     """Check every open position. Returns one signal per position to close.
 
     A position with no premium quote is still evaluated on its underlying
@@ -136,6 +174,7 @@ def scan(conn, underlyings: dict[str, float], premiums: dict[str, float],
             premium=premiums.get(position["symbol"]),
             today=today,
             rules=rules,
+            now_utc=now_utc,
         )
         if signal:
             out.append(signal)

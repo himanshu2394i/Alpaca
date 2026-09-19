@@ -11,6 +11,14 @@ from agent import exits, run, screener, store
 TODAY = "2026-08-26"
 NOW = "2026-08-26T14:05:00Z"
 
+@pytest.fixture(autouse=True)
+def _flatten_rule_off(monkeypatch):
+    """Most tick tests hold a position entered two days before NOW, which the
+    intraday-only rule would close as "held past its entry day" before the
+    behaviour under test could show. The rule has its own tests below."""
+    monkeypatch.setitem(exits.EXIT, "flatten_after", None)
+
+
 BASE = dict(underlying="SPY", right="call", qty=7, entry_price=2.00,
             entry_underlying=765.0, stop_underlying=760.0,
             target_underlying=775.0, expiry="2026-09-11")
@@ -712,3 +720,116 @@ def test_session_bounds_peak_never_falls_below_current_equity(conn):
     store.record_equity(conn, f"{TODAY}T13:30:00Z", 100_000)
     day_start, peak = run._session_bounds(conn, current_equity=103_000, today=TODAY)
     assert peak == 103_000
+
+
+# --- a failed account fetch must not be recorded as zero equity -------------
+#
+# Live 2026-09-13: Alpaca's account call returned no `equity` for ~11 minutes.
+# _market_state() turned the missing value into 0.0 and the loop saved it -
+# nine $0.00 rows in the equity table, and on a weekday the drawdown gate
+# would have read -100% and silently blocked entries. A missing equity is a
+# failed fetch, not an account worth nothing: refuse it so the tick is skipped.
+
+async def test_market_state_returns_equity_when_the_account_call_works(conn, monkeypatch):
+    import agent.mcp_bridge as mcp_bridge_module
+
+    async def fake_call(sess, name, args):
+        return {"equity": "100000"}
+
+    monkeypatch.setattr(mcp_bridge_module, "call", fake_call)
+    _, equity = await run._market_state(conn, object(), [])
+    assert equity == 100_000.0
+
+
+@pytest.mark.parametrize("payload", [
+    {},                                              # empty envelope
+    {"text": "Error calling tool: HTTP 503"},         # tool error surfaced as text
+    {"equity": None},
+    {"equity": "0"},
+    {"equity": "not-a-number"},
+])
+async def test_market_state_refuses_a_missing_or_zero_equity(conn, monkeypatch, payload):
+    import agent.mcp_bridge as mcp_bridge_module
+
+    async def fake_call(sess, name, args):
+        return payload
+
+    monkeypatch.setattr(mcp_bridge_module, "call", fake_call)
+    with pytest.raises(RuntimeError, match="equity"):
+        await run._market_state(conn, object(), [])
+
+
+# --- the tick keeps the option-price path of every open position -------------
+
+def _open_call_and_put(conn):
+    open_a_losing_position(conn)   # SPY260911C00765000, entered 2026-08-24T14:05
+    store.open_position(conn, symbol="SPY260918P00760000",
+                        entry_ts="2026-08-25T15:00:00Z",
+                        **{**BASE, "right": "put", "expiry": "2026-09-18",
+                           "stop_underlying": 770.0, "target_underlying": 755.0})
+
+
+async def test_tick_logs_a_premium_tick_for_each_open_position_with_a_quote(
+        conn, tmp_path):
+    _open_call_and_put(conn)
+    quotes = {"SPY260911C00765000": (1.58, 1.62), "SPY260918P00760000": (2.00, 2.20)}
+
+    await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 765.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT", quotes=quotes)
+
+    call = store.premium_ticks(conn, "SPY260911C00765000", "2026-08-24T14:05:00Z")
+    put = store.premium_ticks(conn, "SPY260918P00760000", "2026-08-25T15:00:00Z")
+    assert [(r["ts_utc"], r["bid"], r["ask"], r["underlying"]) for r in call] == [
+        (NOW, 1.58, 1.62, 765.0)]
+    assert [(r["bid"], r["ask"]) for r in put] == [(2.00, 2.20)]
+
+
+async def test_tick_logs_nothing_for_a_position_without_a_quote(conn, tmp_path):
+    _open_call_and_put(conn)
+
+    await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 765.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT",
+                   quotes={"SPY260911C00765000": (1.58, 1.62)})   # put has no quote
+
+    assert store.premium_ticks(conn, "SPY260918P00760000", "2026-08-25T15:00:00Z") == []
+    assert len(store.premium_ticks(conn, "SPY260911C00765000",
+                                   "2026-08-24T14:05:00Z")) == 1
+
+
+async def test_premium_ticks_are_logged_even_while_halted(conn, tmp_path):
+    # The data is only useful if it is continuous; a halt stops entries, not
+    # observation.
+    _open_call_and_put(conn)
+    halt = tmp_path / "HALT"
+    halt.write_text("stop")
+
+    await run.tick(conn, FakeBroker(), now_utc=NOW, today=TODAY,
+                   underlyings={"SPY": 765.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=halt,
+                   quotes={"SPY260911C00765000": (1.58, 1.62)})
+
+    assert len(store.premium_ticks(conn, "SPY260911C00765000",
+                                   "2026-08-24T14:05:00Z")) == 1
+
+
+# --- intraday-only through the tick ------------------------------------------
+
+async def test_tick_sells_a_same_day_position_at_the_flatten_time(
+        conn, tmp_path, monkeypatch):
+    monkeypatch.setitem(exits.EXIT, "flatten_after", "15:45")
+    late = "2026-08-26T19:50:00Z"                                        # 15:50 ET
+    store.open_position(conn, symbol="SPY260911C00765000",
+                        entry_ts="2026-08-26T14:05:00Z", **BASE)
+    seed_fresh_bars(conn, ts_utc=late)
+    broker = FakeBroker()
+
+    await run.tick(conn, broker, now_utc=late, today=TODAY,
+                   underlyings={"SPY": 766.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT", dry_run=False,
+                   quotes={"SPY260911C00765000": (2.00, 2.05)})
+
+    assert [o["side"] for o, _ in broker.orders] == ["sell"]
+    assert store.open_positions(conn) == []
+    assert "end of day" in store.closed_positions(conn)[0]["exit_reason"]
