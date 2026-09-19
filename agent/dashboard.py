@@ -23,6 +23,12 @@ COMPETITION = {
 }
 """The window that was actually scored, for the frozen record below."""
 
+STRATEGY_CHANGED_ON = "2026-09-19"
+"""The day the live strategy became intraday-only (entries 10:00-14:30 ET,
+flat by 15:45 ET). Before it, this account ran the competition strategy
+unchanged, with multi-day holds - the page says so rather than implying one
+strategy throughout."""
+
 NEW_ACCOUNT_SINCE = "2026-09-13"
 """First day of the current account. The 'Live now' section reflects this
 account only - nothing before this date belongs to it."""
@@ -204,10 +210,12 @@ $100,000.</p>
   <div class="card"><div class="k">Closed</div><div class="v">{s['closed']}</div></div>
   <div class="card"><div class="k">Win rate</div><div class="v">{wr}</div></div>
 </div>
-<p class="muted">A fresh paper account, trading since {NEW_ACCOUNT_SINCE} on the
-same strategy and risk gates as the judged competition above. The database was
-reset for the account switch (audit tables cleared, market history kept), so
-everything below this line belongs to this account only.</p>
+<p class="muted">A fresh paper account, trading since {NEW_ACCOUNT_SINCE}. Until
+{STRATEGY_CHANGED_ON} it ran the competition strategy unchanged (multi-day holds);
+from {STRATEGY_CHANGED_ON} it is intraday-only: entries 10:00&ndash;14:30 ET,
+everything closed by 15:45 ET. The database was reset for the account switch
+(audit tables cleared, market history kept), so everything below this line
+belongs to this account only.</p>
 
 {sparkline(store.equity_series(conn))}
 
