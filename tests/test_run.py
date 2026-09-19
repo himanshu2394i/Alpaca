@@ -11,6 +11,14 @@ from agent import exits, run, screener, store
 TODAY = "2026-08-26"
 NOW = "2026-08-26T14:05:00Z"
 
+@pytest.fixture(autouse=True)
+def _flatten_rule_off(monkeypatch):
+    """Most tick tests hold a position entered two days before NOW, which the
+    intraday-only rule would close as "held past its entry day" before the
+    behaviour under test could show. The rule has its own tests below."""
+    monkeypatch.setitem(exits.EXIT, "flatten_after", None)
+
+
 BASE = dict(underlying="SPY", right="call", qty=7, entry_price=2.00,
             entry_underlying=765.0, stop_underlying=760.0,
             target_underlying=775.0, expiry="2026-09-11")
@@ -804,3 +812,24 @@ async def test_premium_ticks_are_logged_even_while_halted(conn, tmp_path):
 
     assert len(store.premium_ticks(conn, "SPY260911C00765000",
                                    "2026-08-24T14:05:00Z")) == 1
+
+
+# --- intraday-only through the tick ------------------------------------------
+
+async def test_tick_sells_a_same_day_position_at_the_flatten_time(
+        conn, tmp_path, monkeypatch):
+    monkeypatch.setitem(exits.EXIT, "flatten_after", "15:45")
+    late = "2026-08-26T19:50:00Z"                                        # 15:50 ET
+    store.open_position(conn, symbol="SPY260911C00765000",
+                        entry_ts="2026-08-26T14:05:00Z", **BASE)
+    seed_fresh_bars(conn, ts_utc=late)
+    broker = FakeBroker()
+
+    await run.tick(conn, broker, now_utc=late, today=TODAY,
+                   underlyings={"SPY": 766.0}, equity=100_000, day_start=100_000,
+                   peak=100_000, halt_file=tmp_path / "HALT", dry_run=False,
+                   quotes={"SPY260911C00765000": (2.00, 2.05)})
+
+    assert [o["side"] for o, _ in broker.orders] == ["sell"]
+    assert store.open_positions(conn) == []
+    assert "end of day" in store.closed_positions(conn)[0]["exit_reason"]

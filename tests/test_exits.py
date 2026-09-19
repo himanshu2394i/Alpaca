@@ -196,3 +196,65 @@ def test_levels_feed_straight_into_check():
     p = pos(right="call", entry_underlying=765.0, stop=stop, target=target)
     assert exits.check(p, underlying=766.0, premium=2.10, today=TODAY) is None
     assert exits.check(p, underlying=759.9, premium=2.10, today=TODAY) is not None
+
+
+# --- intraday-only: flat by the close, never held past the entry day --------
+#
+# The entry signal is a same-day move from the open, but positions used to be
+# held for days. 8 of 24 real trades exited within minutes of a later open
+# (COIN stopped at -53% on a -40% stop after an overnight gap). The strategy
+# now closes everything before the bell. Times are August, so ET = UTC - 4.
+
+INTRADAY = {**exits.EXIT, "flatten_after": "15:45"}
+ENTERED_TODAY = "2026-08-26T14:05:00Z"          # 10:05 ET, a Wednesday
+
+
+def held(entry_ts=ENTERED_TODAY, **kw):
+    return {**pos(**kw), "entry_ts": entry_ts}
+
+
+def _check(position, now_utc, rules=INTRADAY):
+    return exits.check(position, underlying=767.0, premium=2.10, today=TODAY,
+                       rules=rules, now_utc=now_utc)
+
+
+def test_a_same_day_position_is_closed_at_the_flatten_time():
+    sig = _check(held(expiry="2026-10-16"), "2026-08-26T19:45:00Z")      # 15:45 ET
+    assert sig is not None and sig.forced and "end of day" in sig.reason
+
+
+def test_a_same_day_position_is_left_alone_before_the_flatten_time():
+    assert _check(held(expiry="2026-10-16"), "2026-08-26T19:44:00Z") is None
+
+
+def test_a_position_from_an_earlier_day_is_closed_at_the_next_session():
+    sig = _check(held(entry_ts="2026-08-25T14:05:00Z", expiry="2026-10-16"),
+                 "2026-08-26T13:31:00Z")                                # 09:31 ET
+    assert sig is not None and sig.forced and "entry day" in sig.reason
+
+
+def test_no_flatten_signal_outside_the_session():
+    """After the bell and on weekends nothing can be sold, so signalling would
+    only write a failed-exit row per position per tick all night."""
+    old = held(entry_ts="2026-08-25T14:05:00Z", expiry="2026-10-16")
+    assert _check(old, "2026-08-26T20:30:00Z") is None                   # 16:30 ET
+    assert _check(old, "2026-08-29T15:00:00Z") is None                   # Saturday
+
+
+def test_flatten_after_none_turns_the_rule_off():
+    rules = {**exits.EXIT, "flatten_after": None}
+    old = held(entry_ts="2026-08-25T14:05:00Z", expiry="2026-10-16")
+    assert _check(old, "2026-08-26T19:50:00Z", rules=rules) is None
+
+
+def test_scan_applies_the_flatten_rule(conn):
+    from agent import store
+    store.open_position(conn, symbol="SPY261016C00765000", underlying="SPY",
+                        right="call", qty=1, entry_price=2.00,
+                        entry_ts=ENTERED_TODAY, entry_underlying=765.0,
+                        stop_underlying=760.0, target_underlying=775.0,
+                        expiry="2026-10-16")
+    got = exits.scan(conn, underlyings={"SPY": 767.0},
+                     premiums={"SPY261016C00765000": 2.10}, today=TODAY,
+                     rules=INTRADAY, now_utc="2026-08-26T19:50:00Z")
+    assert len(got) == 1 and "end of day" in got[0].reason

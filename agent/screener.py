@@ -32,7 +32,10 @@ TRIGGER = {
     "ema_period": 20,
     "rvol_lookback_days": 5,
     "adr_lookback_days": 10,
-    "min_session_bars": 20,     # do not judge a session on its first few minutes
+    # First entry at 10:00 ET (30 regular-hours minutes). Option spreads are
+    # widest and implied volatility highest in the first half hour; a move that
+    # is real is still there at 10:00, and does not cost the open's premium.
+    "min_session_bars": 30,
     "mtf_enabled": True,          # hybrid Supertrend/RSI/EMA confirmation
 }
 

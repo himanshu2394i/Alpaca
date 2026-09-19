@@ -142,13 +142,27 @@ def test_size_is_never_negative_or_fractional():
 # the LLM entirely once it's true, instead of discovering it after paying for both.
 
 def test_entry_cutoff_reason_is_none_before_the_cutoff():
-    assert gates.entry_cutoff_reason("15:29") is None
+    assert gates.entry_cutoff_reason("14:29") is None
 
 
 def test_entry_cutoff_reason_fires_at_and_after_the_cutoff():
-    assert gates.entry_cutoff_reason("15:30") is not None
+    assert gates.entry_cutoff_reason("14:30") is not None
     assert gates.entry_cutoff_reason("19:59") is not None
-    assert "15:30" in gates.entry_cutoff_reason("16:00")
+    assert "14:30" in gates.entry_cutoff_reason("16:00")
+
+
+def test_entries_close_at_least_an_hour_before_the_flatten_time():
+    """Intraday-only: an entry needs room to play out before the close-out.
+    An entry at 15:29 would be force-sold 16 minutes later, having paid the
+    spread both ways for no chance of the move developing."""
+    from agent import exits
+
+    def minutes(hhmm):
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+
+    assert (minutes(exits.EXIT["flatten_after"])
+            - minutes(gates.RISK["no_entry_after"])) >= 60
 
 
 # --- account-level halts ----------------------------------------------------

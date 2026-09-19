@@ -18,7 +18,7 @@ RISK = {
     "max_concurrent":    5,
     "daily_loss_halt":  -0.03,    # -$3,000 -> stop trading today
     "drawdown_halt":    -0.08,    # -$8,000 from peak -> flatten and stop
-    "no_entry_after":   "15:30",  # ET
+    "no_entry_after":   "14:30",  # ET - intraday-only: leaves >= 75 min before the 15:45 flatten
     "dte_range":        (3, 45),
     "min_prev_volume":  500,      # prior-session contract volume
     "max_spread_pct":   0.10,     # bid-ask as a fraction of mid

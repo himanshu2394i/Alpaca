@@ -132,7 +132,8 @@ async def tick(
                                       underlyings.get(p["underlying"]))
 
     # --- exits first, and regardless of any halt --------------------------
-    exit_signals = exits.scan(conn, underlyings, premiums, today)
+    exit_signals = exits.scan(conn, underlyings, premiums, today,
+                              now_utc=now_utc)
     for signal in exit_signals:
         position = next(p for p in store.open_positions(conn)
                         if p["symbol"] == signal.symbol)
